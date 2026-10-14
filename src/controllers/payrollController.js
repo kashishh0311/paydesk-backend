@@ -267,7 +267,6 @@ const downloadPayslip = async (req, res) => {
     const { html, filename } = await payrollService.generatePayslipDownload(id);
 
     res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
     return res.status(200).send(html);
   } catch (error) {
     console.error('downloadPayslip error:', error);

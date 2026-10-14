@@ -648,6 +648,19 @@ class PayrollService {
       const plain = p.toJSON();
       plain.month_name = MONTH_NAMES[plain.payroll_month] || 'October';
       plain.base_salary = plain.basic_salary;
+      plain.deductions = plain.deductions ? [...plain.deductions] : [];
+      const lop = parseFloat(plain.lop_deduction || 0);
+      const unpaid = parseInt(plain.unpaid_leave_days || 0, 10);
+      if (lop > 0) {
+        const hasLop = plain.deductions.some(d => d.deduction_type && d.deduction_type.toLowerCase().includes('loss of pay'));
+        if (!hasLop) {
+          plain.deductions.push({
+            deduction_type: 'Loss of Pay (LOP)',
+            amount: lop,
+            reason: `${unpaid || 1} day(s) unpaid leave deduction`
+          });
+        }
+      }
       return plain;
     });
 
@@ -704,6 +717,19 @@ class PayrollService {
     const plain = record.toJSON();
     plain.month_name = MONTH_NAMES[plain.payroll_month] || 'October';
     plain.base_salary = plain.basic_salary;
+    plain.deductions = plain.deductions ? [...plain.deductions] : [];
+    const lop = parseFloat(plain.lop_deduction || 0);
+    const unpaid = parseInt(plain.unpaid_leave_days || 0, 10);
+    if (lop > 0) {
+      const hasLop = plain.deductions.some(d => d.deduction_type && d.deduction_type.toLowerCase().includes('loss of pay'));
+      if (!hasLop) {
+        plain.deductions.push({
+          deduction_type: 'Loss of Pay (LOP)',
+          amount: lop,
+          reason: `${unpaid || 1} day(s) unpaid leave deduction`
+        });
+      }
+    }
     return plain;
   }
 
@@ -849,17 +875,209 @@ class PayrollService {
     const monthNames = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
     const monthName = monthNames[(plain.payroll_month || 10) - 1];
     const year = plain.payroll_year || 2026;
-    const deductions = plain.deductions || [];
-
     const filename = `Salary_Slip_${emp.employee_code || id}_${monthName}_${year}.html`;
+    const deductions = plain.deductions || [];
 
     const html = `<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="utf-8">
-  <title>Salary Slip - ${emp.employee_code} - ${monthName} ${year}</title>
+  <title>Salary_Slip_${emp.employee_code || id}_${monthName}_${year}</title>
+  <style>
+    * { box-sizing: border-box; }
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      background: #f8fafc;
+      color: #1e293b;
+      margin: 0;
+      padding: 24px;
+      font-size: 13px;
+      line-height: 1.5;
+    }
+    .no-print {
+      max-width: 800px;
+      margin: 0 auto 20px auto;
+      background: #eef2ff;
+      border: 1px solid #c7d2fe;
+      border-radius: 10px;
+      padding: 12px 18px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+    }
+    .print-btn {
+      background: #4f46e5;
+      color: #ffffff;
+      border: none;
+      border-radius: 8px;
+      padding: 8px 18px;
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      box-shadow: 0 1px 2px rgba(79, 70, 229, 0.2);
+    }
+    .print-btn:hover { background: #4338ca; }
+    .slip-container {
+      max-width: 800px;
+      margin: 0 auto;
+      background: #ffffff;
+      border: 1px solid #e2e8f0;
+      border-radius: 14px;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.05);
+      padding: 32px;
+    }
+    .header {
+      display: flex;
+      justify-content: space-between;
+      align-items: flex-start;
+      border-bottom: 2px solid #f1f5f9;
+      padding-bottom: 20px;
+      margin-bottom: 24px;
+    }
+    .brand {
+      font-size: 20px;
+      font-weight: 800;
+      color: #4f46e5;
+      letter-spacing: -0.5px;
+    }
+    .slip-title {
+      font-size: 18px;
+      font-weight: 700;
+      color: #0f172a;
+    }
+    .status-badge {
+      display: inline-block;
+      padding: 3px 10px;
+      background: #ecfdf5;
+      color: #059669;
+      border: 1px solid #a7f3d0;
+      border-radius: 20px;
+      font-size: 11px;
+      font-weight: 700;
+      margin-top: 4px;
+    }
+    .meta-grid {
+      display: grid;
+      grid-template-columns: repeat(4, 1fr);
+      gap: 14px;
+      background: #f8fafc;
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      padding: 16px;
+      margin-bottom: 24px;
+    }
+    .meta-item { display: flex; flex-direction: column; }
+    .meta-label { font-size: 11px; color: #64748b; font-weight: 500; margin-bottom: 2px; }
+    .meta-value { font-size: 13px; font-weight: 600; color: #1e293b; font-family: ui-monospace, monospace; }
+    .table-section {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 20px;
+      margin-bottom: 24px;
+    }
+    .table-card {
+      border: 1px solid #e2e8f0;
+      border-radius: 10px;
+      overflow: hidden;
+    }
+    .table-header {
+      padding: 10px 14px;
+      background: #f8fafc;
+      border-bottom: 1px solid #e2e8f0;
+      font-size: 12px;
+      font-weight: 700;
+      color: #334155;
+      text-transform: uppercase;
+      letter-spacing: 0.5px;
+    }
+    .table-header.deductions { color: #e11d48; }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+    }
+    th {
+      background: #fafafa;
+      padding: 8px 14px;
+      font-size: 11px;
+      color: #64748b;
+      text-align: left;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    td {
+      padding: 10px 14px;
+      font-size: 12px;
+      border-bottom: 1px solid #f1f5f9;
+    }
+    .text-right { text-align: right; font-family: ui-monospace, monospace; }
+    .total-row {
+      background: #f8fafc;
+      font-weight: 700;
+      border-top: 2px solid #e2e8f0;
+    }
+    .total-row td { padding: 12px 14px; font-size: 13px; }
+    .bonus-row td { color: #059669; font-weight: 600; }
+    .net-box {
+      background: linear-gradient(135deg, #4f46e5 0%, #4338ca 100%);
+      color: #ffffff;
+      border-radius: 12px;
+      padding: 20px 24px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 24px;
+      box-shadow: 0 4px 10px rgba(79, 70, 229, 0.25);
+    }
+    .net-label { font-size: 12px; font-weight: 700; letter-spacing: 1px; text-transform: uppercase; opacity: 0.9; }
+    .net-sub { font-size: 11px; opacity: 0.8; margin-top: 2px; }
+    .net-amount { font-size: 26px; font-weight: 800; font-family: ui-monospace, monospace; }
+    .footer {
+      border-top: 1px dashed #cbd5e1;
+      padding-top: 16px;
+      text-align: center;
+      font-size: 11px;
+      color: #94a3b8;
+    }
+    @page {
+      size: A4 portrait;
+      margin: 12mm;
+    }
+    @media print {
+      body {
+        background: #ffffff !important;
+        padding: 0 !important;
+        -webkit-print-color-adjust: exact !important;
+        print-color-adjust: exact !important;
+      }
+      .no-print { display: none !important; }
+      .slip-container {
+        border: none !important;
+        box-shadow: none !important;
+        padding: 0 !important;
+        max-width: 100% !important;
+      }
+    }
+  </style>
+  <script>
+    window.addEventListener('load', function() {
+      setTimeout(function() {
+        window.print();
+      }, 350);
+    });
+  </script>
 </head>
 <body>
+  <div class="no-print">
+    <span style="font-size: 13px; color: #3730a3; font-weight: 600;">
+      Print or Save as PDF Dialog should open automatically. Choose "Save as PDF" destination.
+    </span>
+    <button onclick="window.print()" class="print-btn">
+      Save as PDF / Print
+    </button>
+  </div>
+
   <div class="slip-container">
     <div class="header">
       <div>
@@ -869,7 +1087,7 @@ class PayrollService {
       <div style="text-align: right;">
         <div class="slip-title">Salary Slip</div>
         <div style="font-size: 14px; font-weight: 700; color: #1e293b; margin-top: 2px;">${monthName} ${year}</div>
-        <div style="font-size: 11px; color: #10b981; font-weight: 700; margin-top: 2px;">Status: Verified ${plain.status || 'Paid'}</div>
+        <div class="status-badge">Verified ${plain.status || 'Paid'}</div>
       </div>
     </div>
 
