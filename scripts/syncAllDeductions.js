@@ -1,13 +1,53 @@
-const { sequelize, Employee, SalaryRecord, PayrollDeduction } = require('../src/models');
+const { sequelize, PayrollDeduction, PayrollRecord } = require('../src/models');
 
 async function syncAllDeductions() {
-  console.log('Starting full deduction synchronization for all employees...');
+  console.log('[Deduction Sync] Starting automated statutory deduction sync for all employees...');
   const startTime = Date.now();
 
   try {
-    const [epfRes] = await sequelize.query(`
-      INSERT INTO payroll_deductions (employee_id, deduction_type, amount, reason, source_record, approval_status, created_at, updated_at)
+    await sequelize.query(`
+      INSERT INTO payroll_records (
+        employee_id, payroll_month, payroll_year, basic_salary, allowances, 
+        gross_salary, attendance_days, unpaid_leave_days, lop_deduction, 
+        statutory_deductions, other_deductions, total_deductions, bonus_amount, 
+        net_salary, status, created_at, updated_at
+      )
       SELECT 
+        e.id, 
+        10, 
+        2026, 
+        COALESCE(ROUND(sr.base_salary / 12), 5417), 
+        COALESCE(ROUND((sr.base_salary / 12) * 0.60), 3250), 
+        COALESCE(ROUND((sr.base_salary / 12) * 1.60), 8667), 
+        30, 
+        0, 
+        0, 
+        COALESCE(ROUND((sr.base_salary / 12) * 0.12) + 320, 970), 
+        0, 
+        COALESCE(ROUND((sr.base_salary / 12) * 0.12) + 320, 970), 
+        0, 
+        COALESCE(ROUND((sr.base_salary / 12) * 1.60) - (ROUND((sr.base_salary / 12) * 0.12) + 320), 7697), 
+        'Approved', 
+        NOW(), 
+        NOW()
+      FROM employees e
+      LEFT JOIN (
+        SELECT employee_id, base_salary
+        FROM salary_records
+        WHERE id IN (SELECT MAX(id) FROM salary_records GROUP BY employee_id)
+      ) sr ON sr.employee_id = e.id
+      LEFT JOIN payroll_records pr ON pr.employee_id = e.id AND pr.payroll_month = 10 AND pr.payroll_year = 2026
+      WHERE pr.id IS NULL;
+    `);
+
+    // 2. EPF: Statutory 12% employee provident fund contribution
+    await sequelize.query(`
+      INSERT INTO payroll_deductions (
+        payroll_record_id, employee_id, deduction_type, amount, reason, 
+        source_record, approval_status, created_at, updated_at
+      )
+      SELECT 
+        pr.id,
         e.id, 
         'Employee Provident Fund (EPF)', 
         COALESCE(ROUND((sr.base_salary / 12) * 0.12), 650.00), 
@@ -17,19 +57,24 @@ async function syncAllDeductions() {
         NOW(), 
         NOW()
       FROM employees e
-      INNER JOIN (
+      JOIN payroll_records pr ON pr.employee_id = e.id AND pr.payroll_month = 10 AND pr.payroll_year = 2026
+      LEFT JOIN (
         SELECT employee_id, base_salary
         FROM salary_records
         WHERE id IN (SELECT MAX(id) FROM salary_records GROUP BY employee_id)
       ) sr ON sr.employee_id = e.id
-      LEFT JOIN payroll_deductions pd ON pd.employee_id = e.id AND pd.deduction_type LIKE '%EPF%'
+      LEFT JOIN payroll_deductions pd ON pd.payroll_record_id = pr.id AND pd.deduction_type LIKE '%EPF%'
       WHERE pd.id IS NULL;
     `);
-    console.log('EPF records synced:', epfRes?.affectedRows || epfRes);
 
-    const [ptRes] = await sequelize.query(`
-      INSERT INTO payroll_deductions (employee_id, deduction_type, amount, reason, source_record, approval_status, created_at, updated_at)
+    // 3. Professional Tax: ₹200.00
+    await sequelize.query(`
+      INSERT INTO payroll_deductions (
+        payroll_record_id, employee_id, deduction_type, amount, reason, 
+        source_record, approval_status, created_at, updated_at
+      )
       SELECT 
+        pr.id,
         e.id, 
         'Professional Tax', 
         200.00, 
@@ -39,14 +84,19 @@ async function syncAllDeductions() {
         NOW(), 
         NOW()
       FROM employees e
-      LEFT JOIN payroll_deductions pd ON pd.employee_id = e.id AND pd.deduction_type LIKE '%Professional%'
+      JOIN payroll_records pr ON pr.employee_id = e.id AND pr.payroll_month = 10 AND pr.payroll_year = 2026
+      LEFT JOIN payroll_deductions pd ON pd.payroll_record_id = pr.id AND pd.deduction_type LIKE '%Professional%'
       WHERE pd.id IS NULL;
     `);
-    console.log('Professional Tax records synced:', ptRes?.affectedRows || ptRes);
 
-    const [healthRes] = await sequelize.query(`
-      INSERT INTO payroll_deductions (employee_id, deduction_type, amount, reason, source_record, approval_status, created_at, updated_at)
+    // 4. Health & Medical Premium: ₹120.00
+    await sequelize.query(`
+      INSERT INTO payroll_deductions (
+        payroll_record_id, employee_id, deduction_type, amount, reason, 
+        source_record, approval_status, created_at, updated_at
+      )
       SELECT 
+        pr.id,
         e.id, 
         'Health & Medical Premium', 
         120.00, 
@@ -56,26 +106,22 @@ async function syncAllDeductions() {
         NOW(), 
         NOW()
       FROM employees e
-      LEFT JOIN payroll_deductions pd ON pd.employee_id = e.id AND pd.deduction_type LIKE '%Health%'
+      JOIN payroll_records pr ON pr.employee_id = e.id AND pr.payroll_month = 10 AND pr.payroll_year = 2026
+      LEFT JOIN payroll_deductions pd ON pd.payroll_record_id = pr.id AND pd.deduction_type LIKE '%Health%'
       WHERE pd.id IS NULL;
-    `);
-    console.log('Health Premium records synced:', healthRes?.affectedRows || healthRes);
-
-    await sequelize.query(`
-      UPDATE payroll_deductions 
-      SET deduction_type = 'Employee Provident Fund (EPF)' 
-      WHERE deduction_type LIKE '%Provident%' AND deduction_type NOT LIKE '%EPF%';
     `);
 
     const totalCount = await PayrollDeduction.count();
-    console.log(`Synchronization complete! Total deduction records in database: ${totalCount} (took ${Date.now() - startTime}ms)`);
+    console.log(`[Deduction Sync] Complete! Total deductions in database: ${totalCount} (took ${Date.now() - startTime}ms)`);
+    return totalCount;
   } catch (err) {
-    console.error('Error during deduction synchronization:', err);
+    console.error('[Deduction Sync] Error during deduction synchronization:', err);
+    throw err;
   }
 }
 
 if (require.main === module) {
-  syncAllDeductions().then(() => process.exit(0));
+  syncAllDeductions().then(() => process.exit(0)).catch(() => process.exit(1));
 }
 
 module.exports = syncAllDeductions;
