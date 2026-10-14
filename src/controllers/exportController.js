@@ -1,19 +1,14 @@
 const { Op } = require('sequelize');
+const XLSX = require('xlsx');
 const { sequelize, Employee, SalaryRecord, AuditLog } = require('../models');
 
-/**
- * Helper to escape CSV cell
- */
 const escapeCsv = (val) => {
   if (val === null || val === undefined) return '""';
   const str = String(val).replace(/"/g, '""');
   return `"${str}"`;
 };
 
-/**
- * GET /api/v1/export/employees
- * Exports filtered employee records respecting active filters
- */
+
 const exportEmployees = async (req, res) => {
   try {
     const { format = 'csv', search, department, country } = req.query;
@@ -40,7 +35,6 @@ const exportEmployees = async (req, res) => {
     const filename = `paydesk_employees_${new Date().toISOString().split('T')[0]}`;
 
     if (format === 'pdf') {
-      // Printable HTML designed for instant PDF saving/printing
       const html = `
         <!DOCTYPE html>
         <html>
@@ -90,8 +84,35 @@ const exportEmployees = async (req, res) => {
       return res.send(html);
     }
 
-    // CSV or Excel compatible format
     const headers = ['Employee Code', 'First Name', 'Last Name', 'Email', 'Department', 'Job Title', 'Country', 'Currency', 'Hire Date', 'Status'];
+
+    if (format === 'xlsx') {
+      const data = [
+        headers,
+        ...rows.map((r) => [
+          r.employee_code || '',
+          r.first_name || '',
+          r.last_name || '',
+          r.email || '',
+          r.department || '',
+          r.job_title || '',
+          r.country || '',
+          r.currency || '',
+          r.hire_date || '',
+          r.status || ''
+        ])
+      ];
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      XLSX.utils.book_append_sheet(wb, ws, 'Employees');
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+      return res.send(buffer);
+    }
+
     const csvContent = [
       headers.join(','),
       ...rows.map((r) => [
@@ -107,12 +128,6 @@ const exportEmployees = async (req, res) => {
         escapeCsv(r.status)
       ].join(','))
     ].join('\n');
-
-    if (format === 'xlsx') {
-      res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xls"`);
-      return res.send('\uFEFF' + csvContent);
-    }
 
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
@@ -210,6 +225,30 @@ const exportSalaries = async (req, res) => {
       'Net Take-Home'
     ];
 
+    if (format === 'xlsx') {
+      const data = [
+        headers,
+        ...rows.map((r) => [
+          r.employee?.employee_code || '',
+          r.employee ? `${r.employee.first_name} ${r.employee.last_name}` : '',
+          r.employee?.department || '',
+          Number(r.base_salary) || 0,
+          Math.round(Number(r.base_salary) / 12) || 0,
+          -Math.abs(Number(r.deductions)) || 0,
+          Number(r.net_salary) || 0
+        ])
+      ];
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      XLSX.utils.book_append_sheet(wb, ws, 'Salaries');
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+      return res.send(buffer);
+    }
+
     const csvContent = [
       headers.join(','),
       ...rows.map((r) => [
@@ -223,12 +262,6 @@ const exportSalaries = async (req, res) => {
       ].join(','))
     ].join('\n');
 
-    if (format === 'xlsx') {
-      res.setHeader('Content-Type', 'application/vnd.ms-excel; charset=utf-8');
-      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xls"`);
-      return res.send('\uFEFF' + csvContent);
-    }
-
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="${filename}.csv"`);
     return res.send('\uFEFF' + csvContent);
@@ -240,6 +273,7 @@ const exportSalaries = async (req, res) => {
 
 const exportAuditLogs = async (req, res) => {
   try {
+    const { format = 'csv' } = req.query;
     const rows = await AuditLog.findAll({
       limit: 10000,
       order: [['id', 'DESC']],
@@ -250,6 +284,29 @@ const exportAuditLogs = async (req, res) => {
 
     const filename = `paydesk_audit_logs_${new Date().toISOString().split('T')[0]}`;
     const headers = ['Log ID', 'Employee Code', 'Action', 'Justification Reason', 'Created At'];
+
+    if (format === 'xlsx') {
+      const data = [
+        headers,
+        ...rows.map((r) => [
+          r.id,
+          r.employee?.employee_code || 'SYSTEM',
+          r.action,
+          r.reason,
+          r.createdAt || r.created_at || new Date().toISOString()
+        ])
+      ];
+
+      const wb = XLSX.utils.book_new();
+      const ws = XLSX.utils.aoa_to_sheet(data);
+      XLSX.utils.book_append_sheet(wb, ws, 'AuditLogs');
+      const buffer = XLSX.write(wb, { type: 'buffer', bookType: 'xlsx' });
+
+      res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}.xlsx"`);
+      return res.send(buffer);
+    }
+
     const csvContent = [
       headers.join(','),
       ...rows.map((r) => [
