@@ -628,11 +628,16 @@ class PayrollService {
       });
       payrollHistory = [freshRecord];
     } else {
-      // Synchronize bonus if salary record has an assigned bonus that wasn't reflected yet
+      // Synchronize bonus strictly with employee's current active compensation record
       for (const p of payrollHistory) {
-        if (activeBonus > 0 && parseFloat(p.bonus_amount || 0) === 0) {
+        if (activeBonus > 0 && parseFloat(p.bonus_amount || 0) !== activeBonus) {
           p.bonus_amount = activeBonus;
           p.gross_salary = parseFloat(p.basic_salary) + parseFloat(p.allowances) + activeBonus;
+          p.net_salary = p.gross_salary - parseFloat(p.total_deductions);
+          await p.save();
+        } else if (activeBonus === 0 && parseFloat(p.bonus_amount || 0) > 0) {
+          p.bonus_amount = 0;
+          p.gross_salary = parseFloat(p.basic_salary) + parseFloat(p.allowances);
           p.net_salary = p.gross_salary - parseFloat(p.total_deductions);
           await p.save();
         }
