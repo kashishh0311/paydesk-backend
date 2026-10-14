@@ -1,5 +1,5 @@
 const Groq = require('groq-sdk');
-const { sequelize, Employee, SalaryRecord } = require('../models');
+const { sequelize } = require('../models');
 
 let groqClient = null;
 if (process.env.GROQ_API_KEY) {
@@ -11,8 +11,54 @@ if (process.env.GROQ_API_KEY) {
 }
 
 /**
+ * Validate that an SQL query is strictly a read-only SELECT / DESCRIBE / SHOW query
+ */
+const isReadOnlySelect = (sql) => {
+  if (!sql || typeof sql !== 'string') return false;
+  const clean = sql.trim().toLowerCase();
+
+  // Must begin with a read-only keyword
+  if (
+    !clean.startsWith('select') &&
+    !clean.startsWith('with') &&
+    !clean.startsWith('show') &&
+    !clean.startsWith('describe')
+  ) {
+    return false;
+  }
+
+  // Block any data-modifying or DDL keywords
+  const forbidden = [
+    'insert ', 'update ', 'delete ', 'drop ', 'alter ', 'truncate ',
+    'create ', 'replace ', 'grant ', 'revoke ', 'exec ', 'execute ',
+    'call ', 'into outfile', 'into dumpfile'
+  ];
+  for (const word of forbidden) {
+    if (clean.includes(word)) return false;
+  }
+
+  return true;
+};
+
+/**
+ * Clean any accidental programmer/database leak from user-facing assistant response
+ */
+const cleanUserFacingText = (text) => {
+  if (!text) return '';
+  let cleaned = text;
+  cleaned = cleaned.replace(/the verified data set you provided includes|the data set you provided includes|the data set provided includes/gi, 'Our organizational records include');
+  cleaned = cleaned.replace(/the verified data set you provided|the data set you provided|the data set provided/gi, 'our current payroll records');
+  cleaned = cleaned.replace(/pull that detail from the employee master file or HRIS where the work[-‑\s]*location field is stored/gi, 'review local branch allocations');
+  cleaned = cleaned.replace(/from the employee master file or HRIS where the work[-‑\s]*location field is stored/gi, 'from local office records');
+  cleaned = cleaned.replace(/where the work[-‑\s]*location field is stored/gi, 'for local branch records');
+  cleaned = cleaned.replace(/Once you have that figure, I can incorporate it into any further compensation or budgeting analysis you require\./gi, 'I can provide full departmental or compensation breakdowns for our national workforce whenever needed.');
+  return cleaned;
+};
+
+/**
  * POST /api/v1/ai/chat
- * Groq AI Assistant with backend-grounded, verified database calculations
+ * Dynamic AI Assistant: understands user intent, executes live read-only SQL queries on the actual database,
+ * performs dynamic mathematical calculations, and formats an executive HR response without hardcoding.
  */
 const chatWithAssistant = async (req, res) => {
   try {
@@ -26,341 +72,253 @@ const chatWithAssistant = async (req, res) => {
       });
     }
 
-    // 1. Live database calculations - focused 100% on compensation & salary metrics
-    const totalEmployees = await Employee.count();
-
-    const [compAverages] = await sequelize.query(`
-      SELECT 
-        COALESCE(ROUND(AVG(s.base_salary), 0), 0) AS avg_base,
-        COALESCE(ROUND(AVG(s.net_salary), 0), 0) AS avg_net,
-        COALESCE(ROUND(AVG(s.bonuses), 0), 0) AS avg_bonus,
-        COALESCE(ROUND(AVG(s.deductions), 0), 0) AS avg_deduction,
-        COALESCE(ROUND(AVG((s.deductions / NULLIF(s.base_salary, 0)) * 100), 1), 0) AS avg_deduction_pct,
-        COALESCE(ROUND(AVG((s.bonuses / NULLIF(s.base_salary, 0)) * 100), 1), 0) AS avg_bonus_pct
-      FROM salary_records s
-    `);
-    const averages = compAverages[0] || {};
-
-    const [topDeductions] = await sequelize.query(`
-      SELECT 
-        e.employee_code, 
-        e.first_name, 
-        e.last_name, 
-        e.department, 
-        e.job_title, 
-        e.currency, 
-        s.base_salary, 
-        s.bonuses, 
-        s.deductions, 
-        s.net_salary, 
-        ROUND((s.deductions / NULLIF(s.base_salary, 0)) * 100, 1) as deduction_pct
-      FROM employees e
-      JOIN salary_records s ON e.id = s.employee_id
-      WHERE s.base_salary > 0
-      ORDER BY (s.deductions / s.base_salary) DESC
-      LIMIT 10
-    `);
-
-    const [topEarners] = await sequelize.query(`
-      SELECT 
-        e.employee_code, 
-        e.first_name, 
-        e.last_name, 
-        e.department, 
-        e.job_title, 
-        e.currency, 
-        s.base_salary, 
-        s.bonuses, 
-        s.deductions, 
-        s.net_salary
-      FROM employees e
-      JOIN salary_records s ON e.id = s.employee_id
-      ORDER BY s.net_salary DESC
-      LIMIT 10
-    `);
-
-    const [topBonuses] = await sequelize.query(`
-      SELECT 
-        e.employee_code, 
-        e.first_name, 
-        e.last_name, 
-        e.department, 
-        e.job_title, 
-        e.currency, 
-        s.base_salary, 
-        s.bonuses, 
-        s.deductions, 
-        s.net_salary,
-        ROUND((s.bonuses / NULLIF(s.base_salary, 0)) * 100, 1) as bonus_pct
-      FROM employees e
-      JOIN salary_records s ON e.id = s.employee_id
-      ORDER BY s.bonuses DESC
-      LIMIT 10
-    `);
-
-    const [deptStats] = await sequelize.query(`
-      SELECT 
-        e.department,
-        COUNT(DISTINCT e.id) AS headcount,
-        COALESCE(ROUND(AVG(s.base_salary), 0), 0) AS avg_base,
-        COALESCE(ROUND(SUM(s.net_salary), 0), 0) AS total_net_spend
-      FROM employees e
-      LEFT JOIN salary_records s ON e.id = s.employee_id
-      GROUP BY e.department
-      ORDER BY headcount DESC
-    `);
-
-    const [monthlyWorkforceStats] = await sequelize.query(`
-      SELECT 
-        COUNT(DISTINCT e.id) AS total_employees,
-        COALESCE(ROUND(SUM(s.base_salary / 12), 0), 0) AS total_monthly_base,
-        COALESCE(ROUND(SUM((s.base_salary / 12) * 0.40), 0), 0) AS total_monthly_hra,
-        COALESCE(ROUND(SUM((s.base_salary / 12) * 0.20), 0), 0) AS total_monthly_special,
-        COALESCE(ROUND(SUM(s.bonuses), 0), 0) AS total_monthly_bonus,
-        COALESCE(ROUND(SUM((s.base_salary / 12) * 1.60 + s.bonuses), 0), 0) AS total_monthly_gross,
-        COALESCE(ROUND(SUM((s.base_salary / 12) * 0.12), 0), 0) AS total_epf_deductions,
-        COALESCE(COUNT(DISTINCT e.id) * 200, 0) AS total_pt_deductions,
-        COALESCE(COUNT(DISTINCT e.id) * 120, 0) AS total_health_deductions,
-        COALESCE(ROUND(SUM((s.base_salary / 12) * 0.12 + 320), 0), 0) AS total_monthly_deductions,
-        COALESCE(ROUND(SUM((s.base_salary / 12) * 1.60 + s.bonuses - ((s.base_salary / 12) * 0.12 + 320)), 0), 0) AS total_monthly_net
-      FROM employees e
-      JOIN salary_records s ON e.id = s.employee_id
-      WHERE e.status = 'Active'
-        AND s.id IN (SELECT MAX(id) FROM salary_records GROUP BY employee_id)
-    `);
-    const mStats = monthlyWorkforceStats[0] || {};
-    const octEmployees = Number(mStats.total_employees || totalEmployees);
-    const octGross = Number(mStats.total_monthly_gross || 0);
-    const octDeductions = Number(mStats.total_monthly_deductions || 0);
-    const octNet = Number(mStats.total_monthly_net || 0);
-
-    const sepGross = Math.round(octGross * 0.985);
-    const sepDeductions = Math.round(octDeductions * 0.99);
-    const sepNet = sepGross - sepDeductions;
-
-    const [countryStats] = await sequelize.query(`
-      SELECT 
-        e.country,
-        e.currency,
-        COUNT(DISTINCT e.id) AS headcount,
-        COALESCE(ROUND(AVG(s.base_salary), 0), 0) AS avg_base,
-        COALESCE(ROUND(SUM(s.net_salary), 0), 0) AS total_net_spend
-      FROM employees e
-      LEFT JOIN salary_records s ON e.id = s.employee_id
-      GROUP BY e.country, e.currency
-      ORDER BY headcount DESC
-    `);
-
-    const salarySum = await SalaryRecord.sum('net_salary') || 0;
-
-    const formattedDeductions = topDeductions
-      .map((d, i) => `${i + 1}. ${d.first_name} ${d.last_name} (${d.employee_code}) - ${d.department}, ${d.job_title}: Base ${d.currency} ${Number(d.base_salary).toLocaleString()}, Deductions ${d.currency} ${Number(d.deductions).toLocaleString()} (${d.deduction_pct}% of base), Net ${d.currency} ${Number(d.net_salary).toLocaleString()}`)
-      .join('\n');
-
-    const formattedTopEarners = topEarners
-      .map((e, i) => `${i + 1}. ${e.first_name} ${e.last_name} (${e.employee_code}) - ${e.department}, ${e.job_title}: Net ${e.currency} ${Number(e.net_salary).toLocaleString()}, Base ${e.currency} ${Number(e.base_salary).toLocaleString()}`)
-      .join('\n');
-
-    const formattedTopBonuses = topBonuses
-      .map((b, i) => `${i + 1}. ${b.first_name} ${b.last_name} (${b.employee_code}) - ${b.department}: Bonus ${b.currency} ${Number(b.bonuses).toLocaleString()} (${b.bonus_pct}% of base)`)
-      .join('\n');
-
-    const formattedDept = deptStats
-      .map((d) => `${d.department}: ${d.headcount} employees, Avg Base ₹${Number(d.avg_base).toLocaleString('en-IN')}, Total Spend ₹${Number(d.total_net_spend).toLocaleString('en-IN')}`)
-      .join('\n');
-
-    const formattedCountry = countryStats
-      .map((c) => `${c.country} (${c.currency}): ${c.headcount} employees, Avg Base ${c.currency} ${Number(c.avg_base).toLocaleString()}, Total Spend ${c.currency} ${Number(c.total_net_spend).toLocaleString()}`)
-      .join('\n');
-
-    const systemPrompt = `You are the PayDesk AI Compensation & Salary Management Assistant.
-You assist HR Managers with global compensation analytics, budget allocations, deductions, bonuses, and salary compliance.
-
-VERIFIED WORKFORCE & COMPENSATION METRICS (directly queried from MySQL):
-- Total Workforce Headcount: ${octEmployees} active employees across ${deptStats.length} departments
-- Annual Net Payroll Spend: ₹${Math.round(salarySum).toLocaleString('en-IN')}
-- Overall Average Base Salary: ₹${Math.round(Number(averages.avg_base)).toLocaleString('en-IN')}
-- Overall Average Net Take-Home: ₹${Math.round(Number(averages.avg_net)).toLocaleString('en-IN')}
-- Overall Average Bonus: ₹${Math.round(Number(averages.avg_bonus)).toLocaleString('en-IN')} (${averages.avg_bonus_pct}% of base)
-- Overall Average Deductions: ₹${Math.round(Number(averages.avg_deduction)).toLocaleString('en-IN')} (${averages.avg_deduction_pct}% of base)
-
-VERIFIED MONTHLY PAYROLL BREAKDOWN & COMPARISONS:
-- October 2026 (Current Cycle):
-  * Total Headcount: ${octEmployees} employees
-  * Monthly Gross Payroll: ₹${octGross.toLocaleString('en-IN')} (Includes Base ₹${Number(mStats.total_monthly_base).toLocaleString('en-IN')}, Allowances ₹${(Number(mStats.total_monthly_hra) + Number(mStats.total_monthly_special)).toLocaleString('en-IN')}, Performance Bonuses ₹${Number(mStats.total_monthly_bonus).toLocaleString('en-IN')})
-  * Total Monthly Deductions: ₹${octDeductions.toLocaleString('en-IN')} (EPF ₹${Number(mStats.total_epf_deductions).toLocaleString('en-IN')}, PT ₹${Number(mStats.total_pt_deductions).toLocaleString('en-IN')}, Health Insurance ₹${Number(mStats.total_health_deductions).toLocaleString('en-IN')}, and LOP deductions)
-  * Net Take-Home Payable: ₹${octNet.toLocaleString('en-IN')}
-
-- September 2026 (Previous Cycle):
-  * Total Headcount: ${octEmployees} employees
-  * Monthly Gross Payroll: ₹${sepGross.toLocaleString('en-IN')}
-  * Total Monthly Deductions: ₹${sepDeductions.toLocaleString('en-IN')}
-  * Net Take-Home Payable: ₹${sepNet.toLocaleString('en-IN')}
-
-- Variance (September 2026 vs October 2026):
-  * Gross Payroll Variance: +₹${(octGross - sepGross).toLocaleString('en-IN')} (+1.5%)
-  * Total Deductions Variance: +₹${(octDeductions - sepDeductions).toLocaleString('en-IN')} (+1.0%)
-  * Net Salary Variance: +₹${(octNet - sepNet).toLocaleString('en-IN')} (+1.6%)
-
-VERIFIED EMPLOYEES WITH HIGHEST DEDUCTIONS RELATIVE TO BASE SALARY:
-${formattedDeductions}
-
-VERIFIED TOP 10 COMPENSATION EARNERS:
-${formattedTopEarners}
-
-VERIFIED TOP 10 BONUS RECIPIENTS:
-${formattedTopBonuses}
-
-Department Headcounts & Verified Salaries:
-${formattedDept}
-
-Country Headcounts, Currencies & Verified Salaries:
-${formattedCountry}
-
-STRICT INSTRUCTIONS:
-1. When asked to compare months (e.g. September 2026 vs October 2026), or asked for monthly payroll spend, deductions, or employee counts, NEVER say data is not available! Use the verified monthly metrics provided above to present a complete, detailed comparison table with exact numbers in Indian Rupees (₹).
-2. If asked "how many employees works on that" or headcount questions, give the exact headcount (${octEmployees} active employees) and list the department breakdown.
-3. You have complete access to verified individual employee deduction and compensation records. When asked about employees with highest deductions, highest salaries, or bonuses, cite these exact individuals with their names, employee codes, departments, currencies, and numbers.
-4. Do NOT say deduction, monthly, or individual data is unavailable.
-5. This is purely a salary management system. Focus exclusively on compensation, base pay, bonuses, deductions, and net take-home pay.
-6. Do NOT use emojis anywhere in your response.
-7. Keep answers concise, executive, professional, and formatted in clean markdown tables or bold bullet points.`;
-
-    const getDeterministicReply = () => {
-      const q = (message || '').toLowerCase();
-      if (q.includes('compare') || (q.includes('september') && q.includes('october')) || q.includes('month-over-month')) {
-        return `### Monthly Payroll Comparison — September 2026 vs. October 2026\n\n` +
-          `| Metric | September 2026 | October 2026 | Variance (MoM) |\n` +
-          `| :--- | :--- | :--- | :--- |\n` +
-          `| **Active Headcount** | ${octEmployees} employees | ${octEmployees} employees | Stable (0%) |\n` +
-          `| **Total Gross Payroll** | ₹${sepGross.toLocaleString('en-IN')} | ₹${octGross.toLocaleString('en-IN')} | +₹${(octGross - sepGross).toLocaleString('en-IN')} (+1.5%) |\n` +
-          `| **Total Deductions** | ₹${sepDeductions.toLocaleString('en-IN')} | ₹${octDeductions.toLocaleString('en-IN')} | +₹${(octDeductions - sepDeductions).toLocaleString('en-IN')} (+1.0%) |\n` +
-          `| **Net Salary Disbursed** | ₹${sepNet.toLocaleString('en-IN')} | ₹${octNet.toLocaleString('en-IN')} | +₹${(octNet - sepNet).toLocaleString('en-IN')} (+1.6%) |\n\n` +
-          `*All metrics verified from live MySQL records. The October variance reflects merit appraisals and performance increments.*`;
-      }
-      if (q.includes('how many employee') || q.includes('headcount') || q.includes('works on that') || q.includes('how many staff')) {
-        return `**Active Workforce Headcount: ${octEmployees} Employees**\n\n` +
-          `A total of **${octEmployees} active employees** are currently processed across **${deptStats.length} departments**:\n\n` +
-          deptStats.map(d => `- **${d.department}:** ${d.headcount} employees (Total Net Spend: ₹${Number(d.total_net_spend).toLocaleString('en-IN')})`).join('\n') +
-          `\n\nAll records are verified from the live MySQL database.`;
-      }
-      if (q.includes('deduction')) {
-        return `**Employees with Highest Deductions Compared to Base Salary (Verified from MySQL):**\n\n` +
-          topDeductions.slice(0, 5).map((d) => (
-            `- **${d.first_name} ${d.last_name}** (\`${d.employee_code}\`) - ${d.department}, ${d.job_title}\n` +
-            `  - **Base Salary:** ${d.currency} ${Number(d.base_salary).toLocaleString()}\n` +
-            `  - **Deductions:** ${d.currency} ${Number(d.deductions).toLocaleString()} (**${d.deduction_pct}%** of base)\n` +
-            `  - **Net Take-Home:** ${d.currency} ${Number(d.net_salary).toLocaleString()}`
-          )).join('\n\n');
-      }
-      if (q.includes('highest') || q.includes('top paid') || q.includes('earner') || q.includes('salary')) {
-        return `**Top Compensation Earners (Verified from MySQL):**\n\n` +
-          topEarners.slice(0, 5).map((e) => (
-            `- **${e.first_name} ${e.last_name}** (\`${e.employee_code}\`) - ${e.department}, ${e.job_title}: Net ${e.currency} ${Number(e.net_salary).toLocaleString()} (Base: ${e.currency} ${Number(e.base_salary).toLocaleString()})`
-          )).join('\n');
-      }
-      return `**PayDesk Executive Compensation Summary**\n\n- **Total Workforce:** ${octEmployees.toLocaleString()} employees across ${deptStats.length} departments.\n- **Monthly Gross Spend:** ₹${octGross.toLocaleString('en-IN')} (Current Cycle: October 2026).\n- **Monthly Total Deductions:** ₹${octDeductions.toLocaleString('en-IN')}.\n- **Monthly Net Take-Home:** ₹${octNet.toLocaleString('en-IN')}.\n- **Average Base Salary:** ₹${Math.round(Number(averages.avg_base)).toLocaleString('en-IN')}.\n\n*All statistics verified from live MySQL records.*`;
-    };
-
+    // Dynamic fallback if Groq API key is not configured: query real database counts
     if (!groqClient) {
+      const [totalCount] = await sequelize.query("SELECT COUNT(*) AS total FROM employees WHERE status = 'Active'");
+      const [deptCounts] = await sequelize.query("SELECT department, COUNT(*) AS count FROM employees WHERE status = 'Active' GROUP BY department ORDER BY count DESC LIMIT 5");
+      const activeTotal = totalCount[0]?.total || 0;
+      const deptList = (deptCounts || []).map(d => `- **${d.department}:** ${Number(d.count).toLocaleString()} employees`).join('\n');
+
       return res.status(200).json({
         success: true,
-        data: { reply: getDeterministicReply() }
+        data: {
+          reply: `**Active Workforce Overview**\n\nOur organization currently has **${Number(activeTotal).toLocaleString()} active employees** across operational departments:\n\n${deptList}\n\n*(Note: Groq API client is not initialized. Please ensure GROQ_API_KEY is configured in your environment to enable dynamic AI analytics.)*`
+        }
       });
     }
 
+    const systemPrompt = `You are PayDesk AI, the built-in corporate HR and Payroll Advisory Assistant.
+You are communicating directly with an HR Manager, People Director, or Senior Business Executive.
+
+DATABASE ACCESS VIA TOOL:
+You have access to the execute_sql_query tool to execute read-only SQL queries directly against our live MySQL database.
+ALWAYS use execute_sql_query to fetch live, verified records from the database. NEVER guess, invent, or hardcode numbers, percentages, or metrics.
+
+DATABASE SCHEMA:
+1. employees:
+   - id (INT, PK)
+   - employee_code (VARCHAR, e.g. 'EMP-001001')
+   - first_name, last_name, email (VARCHAR)
+   - department (VARCHAR, e.g. 'Engineering', 'Human Resources', 'Sales', 'Finance', 'Marketing', 'Product', 'Legal', 'Operations', 'Support', 'Quality Assurance')
+   - job_title (VARCHAR)
+   - country (VARCHAR: 'Australia', 'Canada', 'Germany', 'India', 'Japan', 'Singapore', 'United Kingdom', 'United States')
+   - currency (VARCHAR: 'AUD', 'CAD', 'EUR', 'INR', 'JPY', 'SGD', 'GBP', 'USD')
+   - hire_date (DATE)
+   - status (ENUM: 'Active', 'On Leave', 'Terminated')
+
+2. salary_records:
+   - id (INT, PK)
+   - employee_id (INT, FK -> employees.id)
+   - base_salary (DECIMAL, annual base compensation)
+   - bonuses (DECIMAL, annual bonus component)
+   - deductions (DECIMAL, annual deductions component)
+   - net_salary (DECIMAL, base_salary + bonuses - deductions)
+   - effective_date (DATE)
+   - reason (VARCHAR)
+
+3. payroll_records:
+   - id (INT, PK)
+   - employee_id (INT, FK -> employees.id)
+   - payroll_month (INT, 1-12, e.g. 10 for October)
+   - payroll_year (INT, e.g. 2026)
+   - basic_salary (DECIMAL, monthly basic salary)
+   - allowances (DECIMAL, monthly HRA and special allowances)
+   - gross_salary (DECIMAL, basic_salary + allowances + bonus_amount)
+   - attendance_days (INT), unpaid_leave_days (INT)
+   - lop_deduction (DECIMAL, Loss of Pay deduction)
+   - statutory_deductions (DECIMAL, EPF + Professional Tax + Insurance)
+   - other_deductions (DECIMAL)
+   - total_deductions (DECIMAL)
+   - bonus_amount (DECIMAL)
+   - net_salary (DECIMAL, gross_salary - total_deductions)
+   - status (ENUM: 'Draft', 'Under Review', 'Approved', 'Processing', 'Paid', 'Failed')
+
+4. payroll_deductions:
+   - id (INT, PK)
+   - payroll_record_id (INT, FK -> payroll_records.id)
+   - employee_id (INT, FK -> employees.id)
+   - deduction_type (VARCHAR, e.g. 'EPF', 'Professional Tax', 'Health Insurance', 'Loss of Pay', 'TDS')
+   - reason (VARCHAR)
+   - amount (DECIMAL)
+   - approval_status (ENUM: 'Approved', 'Pending', 'Rejected')
+
+COMMUNICATION & PERSONA RULES (CRITICAL):
+1. AUDIENCE: You are speaking to an HR Executive / Business User, NOT a programmer or developer.
+2. ABSOLUTELY NEVER USE DEVELOPER OR DATABASE JARGON:
+   - Do NOT say "database schema", "SQL query", "table", "column", "field", "NULL", "SELECT", "master file", or "data set provided".
+   - Instead, speak naturally: "In PayDesk...", "Our workforce records show...", "Across our India operations...", "Under the current payroll cycle...".
+3. LOCATION & CITY INQUIRIES (e.g. Patna, Mumbai, London, New York):
+   - In our system, workforce locations are recorded at the Country/Region level rather than individual city branches.
+   - When asked about a specific city like Patna:
+     Query the database for the active headcount and department breakdown for that country (e.g. India).
+     Explain politely and clearly:
+     "Currently, PayDesk tracks our workforce distribution at the national country level rather than by specific city or local branch. Across our **India operations**, we have **[live count] active employees**."
+     Follow up with the department distribution or compensation metrics for that country.
+4. ACCURATE DYNAMIC CALCULATIONS:
+   - Query the actual database records to calculate live sums, averages, counts, and month-over-month variances.
+   - Perform accurate mathematics on the query results. Never use hardcoded multipliers or percentages.
+5. FORMATTING:
+   - Use clean markdown bullet points, bold key figures, and tables for comparisons.
+   - Zero emojis. Maintain a polite, polished, and executive tone.`;
+
+    // Filter conversation history to keep context clean
+    const sanitizedHistory = conversationHistory.slice(-4).map((m) => ({
+      role: m.role === 'user' ? 'user' : 'assistant',
+      content: cleanUserFacingText(m.content)
+    }));
+
     const messages = [
       { role: 'system', content: systemPrompt },
-      ...conversationHistory.slice(-4).map((m) => ({
-        role: m.role === 'user' ? 'user' : 'assistant',
-        content: m.content
-      })),
+      ...sanitizedHistory,
       { role: 'user', content: message }
     ];
 
     const modelName = process.env.GROQ_MODEL || 'openai/gpt-oss-120b';
+    const tools = [
+      {
+        type: 'function',
+        function: {
+          name: 'execute_sql_query',
+          description: 'Run a read-only SQL SELECT query against the live PayDesk database to fetch real-time employee and payroll data. ALWAYS query the database to obtain accurate records and calculations.',
+          parameters: {
+            type: 'object',
+            properties: {
+              query: {
+                type: 'string',
+                description: 'The read-only SQL SELECT query to execute on the PayDesk database.'
+              }
+            },
+            required: ['query']
+          }
+        }
+      }
+    ];
 
-    let reply = '';
-    try {
-      // Execute with a 15-second timeout promise
-      const groqPromise = groqClient.chat.completions.create({
-        messages,
-        model: modelName,
-        temperature: 0.2,
-        max_tokens: 800
-      });
+    let turns = 0;
+    const maxTurns = 5;
+    let finalReply = '';
 
-      const timeoutPromise = new Promise((_, reject) => {
-        setTimeout(() => {
-          const timeoutErr = new Error('AI request timed out. Please try a simpler question.');
-          timeoutErr.name = 'TimeoutError';
-          timeoutErr.status = 504;
-          timeoutErr.code = 'AI_TIMEOUT';
-          reject(timeoutErr);
-        }, 15000);
-      });
+    while (turns < maxTurns) {
+      turns++;
 
-      const completion = await Promise.race([groqPromise, timeoutPromise]);
-      reply = completion.choices[0]?.message?.content || '';
-    } catch (groqErr) {
-      console.warn('Groq assistant error:', groqErr.status, groqErr.message);
-
-      // Check HTTP 429 Quota Exhausted
-      if (
-        groqErr.status === 429 ||
-        groqErr.statusCode === 429 ||
-        (groqErr.message && (groqErr.message.includes('429') || groqErr.message.toLowerCase().includes('quota') || groqErr.message.toLowerCase().includes('rate limit')))
-      ) {
-        return res.status(429).json({
-          success: false,
-          code: 'AI_QUOTA_EXHAUSTED',
-          message: 'AI service temporarily unavailable. Please try again later.'
+      let completion;
+      try {
+        const groqPromise = groqClient.chat.completions.create({
+          messages,
+          model: modelName,
+          temperature: 0.1,
+          max_tokens: 1000,
+          tools,
+          tool_choice: 'auto'
         });
+
+        const timeoutPromise = new Promise((_, reject) => {
+          setTimeout(() => {
+            const timeoutErr = new Error('AI request timed out. Please try a simpler question.');
+            timeoutErr.name = 'TimeoutError';
+            timeoutErr.status = 504;
+            timeoutErr.code = 'AI_TIMEOUT';
+            reject(timeoutErr);
+          }, 15000);
+        });
+
+        completion = await Promise.race([groqPromise, timeoutPromise]);
+      } catch (groqErr) {
+        console.warn('Groq assistant error:', groqErr.status, groqErr.message);
+
+        if (
+          groqErr.status === 429 ||
+          groqErr.statusCode === 429 ||
+          (groqErr.message && (groqErr.message.includes('429') || groqErr.message.toLowerCase().includes('quota') || groqErr.message.toLowerCase().includes('rate limit')))
+        ) {
+          return res.status(429).json({
+            success: false,
+            code: 'AI_QUOTA_EXHAUSTED',
+            message: 'AI service temporarily unavailable. Please try again later.'
+          });
+        }
+
+        if (groqErr.name === 'TimeoutError' || groqErr.code === 'AI_TIMEOUT' || groqErr.status === 504) {
+          return res.status(504).json({
+            success: false,
+            code: 'AI_TIMEOUT',
+            message: 'AI request timed out. Please try a simpler question.'
+          });
+        }
+
+        // Network or provider error
+        if (groqErr.code === 'ENOTFOUND' || groqErr.code === 'ECONNREFUSED' || groqErr.type === 'system') {
+          return res.status(503).json({
+            success: false,
+            code: 'AI_NETWORK_ERROR',
+            message: 'Unable to connect to AI service. Please check your network.'
+          });
+        }
+
+        throw groqErr;
       }
 
-      // Check Timeout (> 15s)
-      if (groqErr.name === 'TimeoutError' || groqErr.code === 'AI_TIMEOUT' || groqErr.status === 504) {
-        return res.status(504).json({
-          success: false,
-          code: 'AI_TIMEOUT',
-          message: 'AI request timed out. Please try a simpler question.'
-        });
+      const messageChoice = completion.choices[0]?.message;
+      if (!messageChoice) {
+        break;
       }
 
-      // Check Network Failure
-      if (
-        groqErr.code === 'ENOTFOUND' ||
-        groqErr.code === 'ECONNREFUSED' ||
-        groqErr.type === 'system'
-      ) {
-        return res.status(503).json({
-          success: false,
-          code: 'AI_NETWORK_ERROR',
-          message: 'Unable to connect to AI service. Please check your network.'
-        });
-      }
+      // If the model called a tool, execute the query dynamically against the actual database
+      if (messageChoice.tool_calls && messageChoice.tool_calls.length > 0) {
+        messages.push(messageChoice);
 
-      // Check Provider Internal Error (500, 502, 503)
-      if (
-        groqErr.status === 500 ||
-        groqErr.status === 502 ||
-        groqErr.status === 503
-      ) {
-        return res.status(502).json({
-          success: false,
-          code: 'AI_PROVIDER_ERROR',
-          message: 'AI provider is experiencing issues. Please try again shortly.'
-        });
-      }
+        for (const toolCall of messageChoice.tool_calls) {
+          let queryArgs = {};
+          try {
+            queryArgs = typeof toolCall.function.arguments === 'string'
+              ? JSON.parse(toolCall.function.arguments)
+              : toolCall.function.arguments;
+          } catch (pErr) {
+            queryArgs = { query: '' };
+          }
 
-      // If generic error, provide verified database calculations
-      reply = getDeterministicReply();
+          const rawQuery = queryArgs.query || '';
+
+          if (!isReadOnlySelect(rawQuery)) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: toolCall.function.name,
+              content: JSON.stringify({ error: 'Security restriction: Only read-only SELECT queries are permitted.' })
+            });
+            continue;
+          }
+
+          try {
+            const [results] = await sequelize.query(rawQuery);
+            const safeResults = Array.isArray(results) ? results.slice(0, 50) : results;
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: toolCall.function.name,
+              content: JSON.stringify(safeResults)
+            });
+          } catch (dbErr) {
+            messages.push({
+              role: 'tool',
+              tool_call_id: toolCall.id,
+              name: toolCall.function.name,
+              content: JSON.stringify({ error: dbErr.message })
+            });
+          }
+        }
+      } else {
+        finalReply = messageChoice.content || '';
+        break;
+      }
     }
+
+    finalReply = cleanUserFacingText(finalReply);
 
     return res.status(200).json({
       success: true,
       data: {
-        reply: reply || `Verified Organization Overview: Managing ${totalEmployees.toLocaleString()} employees with an annual payroll budget of approx $${Math.round(salarySum).toLocaleString()}.`
+        reply: finalReply || 'I was unable to retrieve data for this request. Please try phrasing your question differently.'
       }
     });
   } catch (error) {
