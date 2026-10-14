@@ -85,8 +85,20 @@ class EmployeeService {
         throw { statusCode: 409, message: 'An employee with this email address already exists' };
       }
 
-      const count = await Employee.count({ transaction: t });
-      const employee_code = `EMP-${String(count + 1).padStart(6, '0')}`;
+      const [maxRow] = await sequelize.query(
+        "SELECT MAX(CAST(SUBSTRING(employee_code, 5) AS UNSIGNED)) AS max_code FROM employees WHERE employee_code LIKE 'EMP-%'",
+        { transaction: t }
+      );
+      const maxNum = Number(maxRow[0]?.max_code) || 0;
+      let nextNum = Math.max(maxNum + 1, (await Employee.count({ transaction: t })) + 1);
+
+      let employee_code = `EMP-${String(nextNum).padStart(6, '0')}`;
+      let exists = await Employee.findOne({ where: { employee_code }, transaction: t });
+      while (exists) {
+        nextNum++;
+        employee_code = `EMP-${String(nextNum).padStart(6, '0')}`;
+        exists = await Employee.findOne({ where: { employee_code }, transaction: t });
+      }
 
       const newEmployee = await Employee.create(
         {

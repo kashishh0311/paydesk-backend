@@ -1,11 +1,90 @@
 const { Op } = require('sequelize');
 const XLSX = require('xlsx');
+const PDFDocument = require('pdfkit');
 const { sequelize, Employee, SalaryRecord, AuditLog } = require('../models');
+
+
+const currencySymbols = {
+  INR: '₹',
+  USD: '$',
+  GBP: '£',
+  EUR: '€',
+  AUD: 'A$',
+  CAD: 'C$',
+  JPY: '¥',
+  SGD: 'S$'
+};
+
+const formatAmount = (val, currency = 'USD') => {
+  const num = Number(val) || 0;
+  const sym = currencySymbols[currency] || (currency ? currency + ' ' : '$');
+  const digits = currency === 'JPY' ? 0 : 2;
+  return `${sym}${num.toLocaleString('en-US', { minimumFractionDigits: digits, maximumFractionDigits: digits })}`;
+};
+
 
 const escapeCsv = (val) => {
   if (val === null || val === undefined) return '""';
   const str = String(val).replace(/"/g, '""');
   return `"${str}"`;
+};
+
+
+const streamPdfTable = (res, { title, subtitle, headers, colWidths, rows, filename, orientation = 'landscape' }) => {
+  const doc = new PDFDocument({ margin: 25, size: 'A4', layout: orientation });
+
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${filename}.pdf"`);
+
+  doc.pipe(res);
+
+  const startX = 25;
+  const tableWidth = colWidths.reduce((a, b) => a + b, 0);
+
+  const drawHeader = () => {
+    doc.fontSize(14).font('Helvetica-Bold').fillColor('#0f172a').text(title, startX, 25);
+    doc.fontSize(8.5).font('Helvetica').fillColor('#64748b').text(subtitle, startX, 42);
+
+    const headerY = 58;
+    doc.rect(startX, headerY, tableWidth, 20).fill('#f1f5f9');
+    doc.font('Helvetica-Bold').fontSize(8).fillColor('#334155');
+
+    let x = startX;
+    headers.forEach((h, i) => {
+      doc.text(h, x + 3, headerY + 6, { width: colWidths[i] - 6, lineBreak: false });
+      x += colWidths[i];
+    });
+
+    return headerY + 20;
+  };
+
+  let y = drawHeader();
+  const rowHeight = 16;
+  const maxY = doc.page.height - 30;
+
+  rows.forEach((row, rIdx) => {
+    if (y + rowHeight > maxY) {
+      doc.addPage();
+      y = drawHeader();
+    }
+
+    if (rIdx % 2 === 1) {
+      doc.rect(startX, y, tableWidth, rowHeight).fill('#f8fafc');
+    }
+
+    doc.rect(startX, y + rowHeight - 0.5, tableWidth, 0.5).fill('#e2e8f0');
+
+    doc.font('Helvetica').fontSize(7.5).fillColor('#1e293b');
+    let x = startX;
+    row.forEach((cell, cIdx) => {
+      doc.text(String(cell ?? ''), x + 3, y + 4, { width: colWidths[cIdx] - 6, lineBreak: false });
+      x += colWidths[cIdx];
+    });
+
+    y += rowHeight;
+  });
+
+  doc.end();
 };
 
 
@@ -33,59 +112,36 @@ const exportEmployees = async (req, res) => {
     });
 
     const filename = `paydesk_employees_${new Date().toISOString().split('T')[0]}`;
+    // Status column removed from all exports
+    const headers = ['Employee Code', 'First Name', 'Last Name', 'Email', 'Department', 'Job Title', 'Country', 'Currency', 'Hire Date'];
 
+    // 1. PDF Export
     if (format === 'pdf') {
-      const html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>PayDesk Employee Directory Report</title>
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; margin: 20px; color: #1e293b; }
-            h1 { font-size: 18px; margin-bottom: 4px; }
-            p { margin-top: 0; color: #64748b; font-size: 11px; margin-bottom: 16px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th { background: #f1f5f9; text-align: left; padding: 8px 10px; font-size: 10px; text-transform: uppercase; border-bottom: 2px solid #cbd5e1; }
-            td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
-            @media print { body { margin: 0; } }
-          </style>
-        </head>
-        <body onload="window.print()">
-          <h1>PayDesk - Global Employee Directory</h1>
-          <p>Export Date: ${new Date().toLocaleString()} | Total Records: ${rows.length}</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Code</th><th>Name</th><th>Email</th><th>Department</th><th>Job Title</th><th>Country</th><th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows
-                .map(
-                  (e) => `
-                <tr>
-                  <td>${e.employee_code}</td>
-                  <td>${e.first_name} ${e.last_name}</td>
-                  <td>${e.email}</td>
-                  <td>${e.department}</td>
-                  <td>${e.job_title}</td>
-                  <td>${e.country} (${e.currency})</td>
-                  <td>${e.status}</td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-          </table>
-        </body>
-        </html>
-      `;
-      res.setHeader('Content-Type', 'text/html');
-      return res.send(html);
+      const colWidths = [70, 75, 75, 145, 115, 140, 85, 45, 55];
+      const pdfRows = rows.map((e) => [
+        e.employee_code || '-',
+        e.first_name || '',
+        e.last_name || '',
+        e.email || '',
+        e.department || '',
+        e.job_title || '',
+        e.country || '',
+        e.currency || 'USD',
+        e.hire_date || ''
+      ]);
+
+      return streamPdfTable(res, {
+        title: 'PayDesk - Global Employee Directory',
+        subtitle: `Export Date: ${new Date().toLocaleString()} | Total Records: ${rows.length}`,
+        headers,
+        colWidths,
+        rows: pdfRows,
+        filename,
+        orientation: 'landscape'
+      });
     }
 
-    const headers = ['Employee Code', 'First Name', 'Last Name', 'Email', 'Department', 'Job Title', 'Country', 'Currency', 'Hire Date', 'Status'];
-
+    // 2. Excel (XLSX) Export
     if (format === 'xlsx') {
       const data = [
         headers,
@@ -98,8 +154,7 @@ const exportEmployees = async (req, res) => {
           r.job_title || '',
           r.country || '',
           r.currency || '',
-          r.hire_date || '',
-          r.status || ''
+          r.hire_date || ''
         ])
       ];
 
@@ -113,6 +168,7 @@ const exportEmployees = async (req, res) => {
       return res.send(buffer);
     }
 
+    // 3. CSV Export
     const csvContent = [
       headers.join(','),
       ...rows.map((r) => [
@@ -124,8 +180,7 @@ const exportEmployees = async (req, res) => {
         escapeCsv(r.job_title),
         escapeCsv(r.country),
         escapeCsv(r.currency),
-        escapeCsv(r.hire_date),
-        escapeCsv(r.status)
+        escapeCsv(r.hire_date)
       ].join(','))
     ].join('\n');
 
@@ -138,6 +193,10 @@ const exportEmployees = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/v1/export/salaries
+ * Exports salary records with country-specific currencies
+ */
 const exportSalaries = async (req, res) => {
   try {
     const { format = 'csv', department, search, month = '2026-10', record_type = 'current' } = req.query;
@@ -155,76 +214,48 @@ const exportSalaries = async (req, res) => {
 
     const rows = result.rows || [];
     const filename = `paydesk_salaries_${month}_${new Date().toISOString().split('T')[0]}`;
-
-    if (format === 'pdf') {
-      const html = `
-        <!DOCTYPE html>
-        <html>
-        <head>
-          <title>PayDesk Employee Salary Report - ${month}</title>
-          <style>
-            body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; font-size: 12px; margin: 20px; color: #1e293b; }
-            h1 { font-size: 18px; margin-bottom: 4px; }
-            p { margin-top: 0; color: #64748b; font-size: 11px; margin-bottom: 16px; }
-            table { width: 100%; border-collapse: collapse; margin-top: 10px; }
-            th { background: #f1f5f9; text-align: left; padding: 8px 10px; font-size: 10px; text-transform: uppercase; border-bottom: 2px solid #cbd5e1; }
-            td { padding: 6px 10px; border-bottom: 1px solid #e2e8f0; font-size: 11px; }
-            .text-right { text-align: right; }
-            .text-red { color: #ef4444; }
-            .font-bold { font-weight: 700; }
-            @media print { body { margin: 0; } }
-          </style>
-        </head>
-        <body onload="window.print()">
-          <h1>PayDesk - Employee Salary Report</h1>
-          <p>Effective Cycle: ${month} | Export Date: ${new Date().toLocaleString('en-IN')} | Total Records: ${rows.length}</p>
-          <table>
-            <thead>
-              <tr>
-                <th>Employee Code</th>
-                <th>Employee Name</th>
-                <th>Department</th>
-                <th class="text-right">Annual Income (₹)</th>
-                <th class="text-right">Monthly Income (₹)</th>
-                <th class="text-right">Deductions (₹)</th>
-                <th class="text-right">Net Take-Home (₹)</th>
-              </tr>
-            </thead>
-            <tbody>
-              ${rows
-                .map(
-                  (r) => `
-                <tr>
-                  <td>${r.employee?.employee_code || '-'}</td>
-                  <td>${r.employee ? `${r.employee.first_name} ${r.employee.last_name}` : '-'}</td>
-                  <td>${r.employee?.department || '-'}</td>
-                  <td class="text-right">₹${Number(r.base_salary).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td class="text-right">₹${Math.round(Number(r.base_salary) / 12).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}/mo</td>
-                  <td class="text-right text-red">-₹${Number(r.deductions).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                  <td class="text-right font-bold">₹${Number(r.net_salary).toLocaleString('en-IN', { minimumFractionDigits: 2, maximumFractionDigits: 2 })}</td>
-                </tr>
-              `
-                )
-                .join('')}
-            </tbody>
-          </table>
-        </body>
-        </html>
-      `;
-      res.setHeader('Content-Type', 'text/html');
-      return res.send(html);
-    }
-
     const headers = [
       'Employee Code',
       'Employee Name',
       'Department',
+      'Country',
+      'Currency',
       'Annual Income',
       'Monthly Income',
       'Deductions',
       'Net Take-Home'
     ];
 
+    // 1. PDF Export
+    if (format === 'pdf') {
+      const colWidths = [65, 110, 95, 80, 45, 95, 85, 75, 95];
+      const pdfRows = rows.map((r) => {
+        const curr = r.employee?.currency || 'USD';
+        return [
+          r.employee?.employee_code || '-',
+          r.employee ? `${r.employee.first_name} ${r.employee.last_name}` : '-',
+          r.employee?.department || '-',
+          r.employee?.country || '-',
+          curr,
+          formatAmount(r.base_salary, curr),
+          formatAmount(Math.round(Number(r.base_salary) / 12), curr) + '/mo',
+          '-' + formatAmount(r.deductions, curr),
+          formatAmount(r.net_salary, curr)
+        ];
+      });
+
+      return streamPdfTable(res, {
+        title: 'PayDesk - Employee Salary Report',
+        subtitle: `Effective Cycle: ${month} | Export Date: ${new Date().toLocaleString()} | Total Records: ${rows.length}`,
+        headers,
+        colWidths,
+        rows: pdfRows,
+        filename,
+        orientation: 'landscape'
+      });
+    }
+
+    // 2. Excel (XLSX) Export
     if (format === 'xlsx') {
       const data = [
         headers,
@@ -232,6 +263,8 @@ const exportSalaries = async (req, res) => {
           r.employee?.employee_code || '',
           r.employee ? `${r.employee.first_name} ${r.employee.last_name}` : '',
           r.employee?.department || '',
+          r.employee?.country || '',
+          r.employee?.currency || 'USD',
           Number(r.base_salary) || 0,
           Math.round(Number(r.base_salary) / 12) || 0,
           -Math.abs(Number(r.deductions)) || 0,
@@ -249,12 +282,15 @@ const exportSalaries = async (req, res) => {
       return res.send(buffer);
     }
 
+    // 3. CSV Export
     const csvContent = [
       headers.join(','),
       ...rows.map((r) => [
         escapeCsv(r.employee?.employee_code || ''),
         escapeCsv(r.employee ? `${r.employee.first_name} ${r.employee.last_name}` : ''),
         escapeCsv(r.employee?.department || ''),
+        escapeCsv(r.employee?.country || ''),
+        escapeCsv(r.employee?.currency || 'USD'),
         escapeCsv(Number(r.base_salary).toFixed(2)),
         escapeCsv(Math.round(Number(r.base_salary) / 12).toFixed(2)),
         escapeCsv((-Math.abs(Number(r.deductions))).toFixed(2)),
@@ -271,6 +307,9 @@ const exportSalaries = async (req, res) => {
   }
 };
 
+/**
+ * GET /api/v1/export/audit-logs
+ */
 const exportAuditLogs = async (req, res) => {
   try {
     const { format = 'csv' } = req.query;

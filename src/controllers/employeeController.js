@@ -1,9 +1,5 @@
 const employeeService = require('../services/employeeService');
 
-/**
- * GET /api/v1/employees
- * Paginated list of employees with search and filters
- */
 const getEmployees = async (req, res) => {
   try {
     const { page, limit, search, department, country } = req.query;
@@ -22,10 +18,7 @@ const getEmployees = async (req, res) => {
   }
 };
 
-/**
- * GET /api/v1/employees/:id
- * Get single employee with salary records and audit logs
- */
+
 const getEmployeeById = async (req, res) => {
   try {
     const employee = await employeeService.getEmployeeById(req.params.id);
@@ -50,10 +43,7 @@ const getEmployeeById = async (req, res) => {
   }
 };
 
-/**
- * POST /api/v1/employees
- * Create new employee with starting salary and compliance audit log
- */
+
 const createEmployee = async (req, res) => {
   try {
     const newEmployee = await employeeService.createEmployee(req.body, req.user?.id || null);
@@ -65,17 +55,19 @@ const createEmployee = async (req, res) => {
     });
   } catch (error) {
     console.error('createEmployee error:', error);
-    return res.status(error.statusCode || 500).json({
+    let message = error.message || 'Failed to create employee record';
+    if (error.errors && Array.isArray(error.errors) && error.errors.length > 0) {
+      message = error.errors.map((e) => e.message).join('. ');
+    }
+    const statusCode = error.statusCode || (error.name === 'SequelizeUniqueConstraintError' ? 409 : 400);
+    return res.status(statusCode).json({
       success: false,
-      message: error.message || 'Failed to create employee record'
+      message
     });
   }
 };
 
-/**
- * DELETE /api/v1/employees/:id
- * Delete employee and record in audit trail
- */
+
 const deleteEmployee = async (req, res) => {
   try {
     const removedEmployee = await employeeService.deleteEmployee(
