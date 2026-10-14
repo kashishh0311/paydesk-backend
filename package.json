@@ -12,7 +12,8 @@
     "db:migrate:undo": "npx sequelize-cli db:migrate:undo",
     "db:seed": "npx sequelize-cli db:seed:all",
     "db:seed:undo": "npx sequelize-cli db:seed:undo:all",
-    "db:seed:employees": "node scripts/seedEmployees.js"
+    "db:seed:employees": "node scripts/seedEmployees.js",
+    "db:sync:deductions": "node scripts/syncAllDeductions.js"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
