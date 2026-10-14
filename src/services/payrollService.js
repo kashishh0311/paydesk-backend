@@ -556,14 +556,16 @@ class PayrollService {
     });
 
     // If employee has no payroll records yet, generate the active October 2026 record with genuine verified structure
+    const latestSal = salaryHistory[0];
+    const activeBonus = latestSal ? parseFloat(latestSal.bonuses) || 0 : 0;
+
     if (payrollHistory.length === 0) {
-      const latestSal = salaryHistory[0];
       const baseSalary = latestSal ? parseFloat(latestSal.base_salary) : 65000;
       const monthlyBase = Math.round(baseSalary / 12);
       const hra = Math.round(monthlyBase * 0.40);
       const special = Math.round(monthlyBase * 0.20);
       const allowances = hra + special;
-      const gross = monthlyBase + allowances;
+      const gross = monthlyBase + allowances + activeBonus;
       const epf = Math.round(monthlyBase * 0.12);
       const pt = 200;
       const health = 120;
@@ -577,7 +579,7 @@ class PayrollService {
         basic_salary: monthlyBase,
         allowances,
         gross_salary: gross,
-        bonus_amount: 0,
+        bonus_amount: activeBonus,
         attendance_days: 30,
         unpaid_leave_days: 0,
         lop_deduction: 0,
@@ -625,6 +627,16 @@ class PayrollService {
         include: [{ model: PayrollDeduction, as: 'deductions' }]
       });
       payrollHistory = [freshRecord];
+    } else {
+      // Synchronize bonus if salary record has an assigned bonus that wasn't reflected yet
+      for (const p of payrollHistory) {
+        if (activeBonus > 0 && parseFloat(p.bonus_amount || 0) === 0) {
+          p.bonus_amount = activeBonus;
+          p.gross_salary = parseFloat(p.basic_salary) + parseFloat(p.allowances) + activeBonus;
+          p.net_salary = p.gross_salary - parseFloat(p.total_deductions);
+          await p.save();
+        }
+      }
     }
 
     const mappedPayroll = payrollHistory.map((p) => {
