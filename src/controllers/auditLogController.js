@@ -22,6 +22,46 @@ const getAuditLogs = async (req, res) => {
   }
 };
 
+const updateAuditLog = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await auditService.updateAuditLog(id, req.body, req.user?.id || null);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Increment/bonus audit record updated and compensation recalculated successfully',
+      data: result
+    });
+  } catch (error) {
+    console.error('updateAuditLog error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Failed to update audit log'
+    });
+  }
+};
+
+const deleteAuditLog = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await auditService.deleteAuditLog(id, req.user?.id || null);
+
+    return res.status(200).json({
+      success: true,
+      message: 'Increment/bonus audit record deleted and compensation reverted successfully',
+      data: result
+    });
+  } catch (error) {
+    console.error('deleteAuditLog error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Failed to delete audit log'
+    });
+  }
+};
+
 module.exports = {
-  getAuditLogs
+  getAuditLogs,
+  updateAuditLog,
+  deleteAuditLog
 };

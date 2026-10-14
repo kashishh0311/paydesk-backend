@@ -1,8 +1,5 @@
 const payrollService = require('../services/payrollService');
 
-/**
- * GET /api/v1/payroll/records
- */
 const getPayrollRecords = async (req, res) => {
   try {
     const { page, limit, payroll_month, payroll_year, status, department, search } = req.query;
@@ -29,9 +26,6 @@ const getPayrollRecords = async (req, res) => {
   }
 };
 
-/**
- * GET /api/v1/payroll/summary
- */
 const getPayrollSummary = async (req, res) => {
   try {
     const { payroll_month, payroll_year } = req.query;
@@ -50,10 +44,7 @@ const getPayrollSummary = async (req, res) => {
   }
 };
 
-/**
- * POST /api/v1/payroll/calculate
- * 6-Step Workflow Step 3
- */
+
 const calculatePayroll = async (req, res) => {
   try {
     const roleName = (req.user?.role?.name || '').toLowerCase();
@@ -89,10 +80,6 @@ const calculatePayroll = async (req, res) => {
   }
 };
 
-/**
- * POST /api/v1/payroll/approve
- * 6-Step Workflow Step 5
- */
 const approvePayroll = async (req, res) => {
   try {
     const roleName = (req.user?.role?.name || '').toLowerCase();
@@ -127,10 +114,6 @@ const approvePayroll = async (req, res) => {
   }
 };
 
-/**
- * POST /api/v1/payroll/payment
- * 6-Step Workflow Step 6
- */
 const recordPayment = async (req, res) => {
   try {
     const roleName = (req.user?.role?.name || '').toLowerCase();
@@ -167,9 +150,6 @@ const recordPayment = async (req, res) => {
   }
 };
 
-/**
- * GET /api/v1/payroll/deductions
- */
 const getDeductions = async (req, res) => {
   try {
     const { page, limit, deduction_type, search } = req.query;
@@ -193,9 +173,6 @@ const getDeductions = async (req, res) => {
   }
 };
 
-/**
- * GET /api/v1/payroll/history/:employee_id
- */
 const getEmployeeHistory = async (req, res) => {
   try {
     const { employee_id } = req.params;
@@ -214,9 +191,6 @@ const getEmployeeHistory = async (req, res) => {
   }
 };
 
-/**
- * GET /api/v1/payroll/deductions/:id
- */
 const getDeductionDetails = async (req, res) => {
   try {
     const { id } = req.params;
@@ -231,9 +205,6 @@ const getDeductionDetails = async (req, res) => {
   }
 };
 
-/**
- * GET /api/v1/payroll/payslip/:id
- */
 const getPayslipDetails = async (req, res) => {
   try {
     const { id } = req.params;

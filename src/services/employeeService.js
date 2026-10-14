@@ -33,6 +33,17 @@ class EmployeeService {
     const { count, rows } = await Employee.findAndCountAll({
       where,
       attributes: ['id', 'employee_code', 'first_name', 'last_name', 'email', 'department', 'job_title', 'country', 'currency', 'hire_date'],
+      include: [
+        {
+          model: SalaryRecord,
+          as: 'salaryRecords',
+          attributes: ['id', 'base_salary', 'bonuses', 'effective_date'],
+          required: false,
+          separate: true,
+          limit: 1,
+          order: [['effective_date', 'DESC'], ['id', 'DESC']]
+        }
+      ],
       limit: limitNum,
       offset,
       order: [['id', 'DESC']]
@@ -117,7 +128,7 @@ class EmployeeService {
       );
 
       const numBase = parseFloat(base_salary) || 75000;
-      const numBonus = Math.round(numBase * 0.1);
+      const numBonus = parseFloat(data.bonus || data.bonuses) || 0;
       const numDeduction = Math.round(numBase * 0.12);
       const netSalary = numBase + numBonus - numDeduction;
 

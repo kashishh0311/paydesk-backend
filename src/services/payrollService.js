@@ -206,17 +206,19 @@ class PayrollService {
         if (!sal) continue;
 
         const base = parseFloat(sal.base_salary) || 65000;
-        const monthlyBase = Math.round(base / 12);
-        const allowances = Math.round(monthlyBase * 0.25);
+        const monthlySalary = Math.round(base / 12);
+        const basicSalary = Math.round(monthlySalary * 0.50);
+        const hra = Math.round(basicSalary * 0.40);
+        const specialAllowance = monthlySalary - basicSalary - hra;
+        const allowances = hra + specialAllowance;
         const bonus = Math.round(parseFloat(sal.bonuses) || 0);
-        const grossSalary = monthlyBase + allowances + bonus;
+        const grossSalary = monthlySalary + bonus;
 
         // Deductions
-        const epf = Math.round(monthlyBase * 0.12);
+        const epf = Math.round(basicSalary * 0.12);
         const healthInsurance = 120;
         const professionalTax = 200;
-        const incomeTax = Math.round(grossSalary * 0.10);
-        const statutoryDeductions = epf + healthInsurance + professionalTax + incomeTax;
+        const statutoryDeductions = epf + healthInsurance + professionalTax;
         const totalDeductions = statutoryDeductions;
         const netSalary = Math.max(0, grossSalary - totalDeductions);
 
@@ -240,7 +242,7 @@ class PayrollService {
             employee_id: emp.id,
             payroll_month: monthNum,
             payroll_year: yearNum,
-            basic_salary: monthlyBase,
+            basic_salary: basicSalary,
             allowances,
             gross_salary: grossSalary,
             attendance_days: daysInMonth,
@@ -256,7 +258,6 @@ class PayrollService {
           { transaction: t }
         );
 
-        // Create itemized deduction entries
         const deductionRows = [
           {
             payroll_record_id: record.id,
@@ -327,9 +328,7 @@ class PayrollService {
     }
   }
 
-  /**
-   * 6-Step Workflow Step 5: Approve Payroll Batch
-   */
+
   async approvePayrollBatch({ payroll_month, payroll_year, record_ids = [], actorId = null }) {
     const where = {};
     if (Array.isArray(record_ids) && record_ids.length > 0) {
@@ -367,9 +366,6 @@ class PayrollService {
     };
   }
 
-  /**
-   * 6-Step Workflow Step 6: Record Payment / Disbursement
-   */
   async recordPaymentBatch({ payroll_month, payroll_year, record_ids = [], payment_reference, payment_method = 'Bank Transfer', actorId = null }) {
     const where = {};
     if (Array.isArray(record_ids) && record_ids.length > 0) {
@@ -410,9 +406,6 @@ class PayrollService {
     };
   }
 
-  /**
-   * Get itemized deductions list with employee details and pagination
-   */
   async listDeductions({ page = 1, limit = 20, deduction_type, search }) {
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = Math.min(100, Math.max(1, parseInt(limit, 10) || 20));
@@ -421,21 +414,20 @@ class PayrollService {
     const where = {};
     const employeeWhere = {};
 
-    // Ensure automatic Loss of Pay (LOP) records from leave-deducted employees exist in payroll_deductions
     await sequelize.query(`
       INSERT INTO payroll_deductions (payroll_record_id, employee_id, deduction_type, amount, reason, source_record, approval_status, created_at, updated_at)
       SELECT pr.id, pr.employee_id, 'Loss of Pay (LOP)', pr.lop_deduction, CONCAT(pr.unpaid_leave_days, ' days unpaid leave deduction'), 'Leave & Attendance Sync', 'Approved', NOW(), NOW()
       FROM payroll_records pr
       LEFT JOIN payroll_deductions pd ON pd.payroll_record_id = pr.id AND pd.deduction_type = 'Loss of Pay (LOP)'
       WHERE pr.lop_deduction > 0 AND pd.id IS NULL
-    `).catch(() => {});
+    `).catch(() => { });
 
     await sequelize.query(
       "UPDATE payroll_deductions SET deduction_type = 'Professional Tax', reason = 'State statutory professional tax levy' WHERE deduction_type LIKE '%Statutory Withholding%'"
-    ).catch(() => {});
+    ).catch(() => { });
     await sequelize.query(
       "UPDATE payroll_deductions SET deduction_type = 'Health & Medical Premium', reason = 'Corporate group medical and health insurance coverage' WHERE deduction_type LIKE '%Health%'"
-    ).catch(() => {});
+    ).catch(() => { });
 
     if (deduction_type && deduction_type !== 'all') {
       if (deduction_type.toLowerCase().includes('lop') || deduction_type.toLowerCase().includes('loss of pay')) {
@@ -446,6 +438,13 @@ class PayrollService {
         where.deduction_type = { [Op.like]: '%Professional%' };
       } else if (deduction_type.toLowerCase().includes('epf') || deduction_type.toLowerCase().includes('provident')) {
         where.deduction_type = { [Op.like]: '%EPF%' };
+      } else if (deduction_type.toLowerCase() === 'custom' || deduction_type.toLowerCase() === 'other' || deduction_type.toLowerCase().includes('loan')) {
+        where.deduction_type = {
+          [Op.or]: [
+            { [Op.notIn]: ['Employee Provident Fund (EPF)', 'Professional Tax', 'Health & Medical Premium', 'Loss of Pay (LOP)', 'EPF'] },
+            { [Op.like]: '%Loan%' }
+          ]
+        };
       } else {
         where.deduction_type = { [Op.like]: `%${deduction_type}%` };
       }
@@ -453,10 +452,12 @@ class PayrollService {
 
     if (search && search.trim() !== '') {
       const q = `%${search.trim()}%`;
-      employeeWhere[Op.or] = [
-        { employee_code: { [Op.like]: q } },
-        { first_name: { [Op.like]: q } },
-        { last_name: { [Op.like]: q } }
+      where[Op.or] = [
+        { deduction_type: { [Op.like]: q } },
+        { reason: { [Op.like]: q } },
+        { '$employee.employee_code$': { [Op.like]: q } },
+        { '$employee.first_name$': { [Op.like]: q } },
+        { '$employee.last_name$': { [Op.like]: q } }
       ];
     }
 
@@ -464,12 +465,13 @@ class PayrollService {
       where,
       limit: limitNum,
       offset,
-      order: [['employee_id', 'ASC'], ['id', 'ASC']],
+      order: [['id', 'DESC']],
       include: [
         {
           model: Employee,
           as: 'employee',
           where: employeeWhere,
+          required: false,
           attributes: ['id', 'employee_code', 'first_name', 'last_name', 'department', 'job_title', 'currency']
         },
         {
@@ -731,6 +733,187 @@ class PayrollService {
       }
     }
     return plain;
+  }
+
+  async addDeductionToPayslip(payrollRecordId, { deduction_name, deduction_amount, reason }, actorId) {
+    const numAmount = Math.max(0, parseFloat(deduction_amount) || 0);
+    if (!deduction_name || !deduction_name.trim() || numAmount <= 0) {
+      throw { statusCode: 400, message: 'Please provide a valid deduction name and positive deduction amount.' };
+    }
+
+    let payroll = await PayrollRecord.findByPk(payrollRecordId);
+    if (!payroll) {
+      const parsedId = parseInt(payrollRecordId, 10);
+      const possibleEmpId = parsedId > 900000 ? (parsedId - 999000) : parsedId;
+      const emp = await Employee.findByPk(possibleEmpId);
+      if (emp) {
+        const hist = await this.getEmployeeHistory(emp.id);
+        if (hist.payrollHistory && hist.payrollHistory.length > 0) {
+          payroll = await PayrollRecord.findByPk(hist.payrollHistory[0].id);
+        }
+      }
+    }
+
+    if (!payroll) {
+      throw { statusCode: 404, message: 'Payroll record not found' };
+    }
+
+    // 1. Create deduction in PayrollDeduction table
+    const cleanName = deduction_name.trim();
+    const deduction = await PayrollDeduction.create({
+      payroll_record_id: payroll.id,
+      employee_id: payroll.employee_id,
+      deduction_type: cleanName,
+      amount: numAmount,
+      reason: reason ? reason.trim() : `Employer approved custom deduction: ${cleanName}`,
+      source_record: 'HR Custom Deduction',
+      approval_status: 'Approved'
+    });
+
+    const newOtherDeductions = (parseFloat(payroll.other_deductions) || 0) + numAmount;
+    const newTotalDeductions = (parseFloat(payroll.total_deductions) || 0) + numAmount;
+    const newNetSalary = parseFloat(payroll.gross_salary) - newTotalDeductions;
+
+    await payroll.update({
+      other_deductions: newOtherDeductions,
+      total_deductions: newTotalDeductions,
+      net_salary: newNetSalary
+    });
+
+    await AuditLog.create({
+      user_id: actorId || null,
+      employee_id: payroll.employee_id,
+      action: 'DEDUCTION_ADDED',
+      new_value: {
+        payroll_record_id: payroll.id,
+        deduction_id: deduction.id,
+        deduction_type: cleanName,
+        amount: numAmount,
+        total_deductions: newTotalDeductions,
+        net_salary: newNetSalary
+      },
+      reason: `HR added deduction "${cleanName}" of ${numAmount} to ${MONTH_NAMES[payroll.payroll_month] || 'Month'} ${payroll.payroll_year} payslip`
+    });
+
+    return await this.getPayslipDetails(payroll.id);
+  }
+
+  async updatePayslipEarnings(payrollRecordId, { bonus_amount, allowances, basic_salary }, actorId) {
+    let payroll = await PayrollRecord.findByPk(payrollRecordId);
+    if (!payroll) {
+      const parsedId = parseInt(payrollRecordId, 10);
+      const possibleEmpId = parsedId > 900000 ? (parsedId - 999000) : parsedId;
+      const emp = await Employee.findByPk(possibleEmpId);
+      if (emp) {
+        const hist = await this.getEmployeeHistory(emp.id);
+        if (hist.payrollHistory && hist.payrollHistory.length > 0) {
+          payroll = await PayrollRecord.findByPk(hist.payrollHistory[0].id);
+        }
+      }
+    }
+
+    if (!payroll) {
+      throw { statusCode: 404, message: 'Payroll record not found' };
+    }
+
+    const updates = {};
+    if (bonus_amount !== undefined) {
+      updates.bonus_amount = Math.max(0, parseFloat(bonus_amount) || 0);
+    }
+    if (allowances !== undefined) {
+      updates.allowances = Math.max(0, parseFloat(allowances) || 0);
+    }
+    if (basic_salary !== undefined) {
+      updates.basic_salary = Math.max(0, parseFloat(basic_salary) || 0);
+    }
+
+    const newBasic = updates.basic_salary !== undefined ? updates.basic_salary : parseFloat(payroll.basic_salary);
+    const newAllowances = updates.allowances !== undefined ? updates.allowances : parseFloat(payroll.allowances || 0);
+    const newBonus = updates.bonus_amount !== undefined ? updates.bonus_amount : parseFloat(payroll.bonus_amount || 0);
+    const newGross = newBasic + newAllowances + newBonus;
+    const totalDeductions = parseFloat(payroll.total_deductions || 0);
+    const newNet = newGross - totalDeductions;
+
+    updates.gross_salary = newGross;
+    updates.net_salary = newNet;
+
+    await payroll.update(updates);
+
+    if (updates.bonus_amount !== undefined) {
+      const latestSalary = await SalaryRecord.findOne({
+        where: { employee_id: payroll.employee_id },
+        order: [['id', 'DESC']]
+      });
+      if (latestSalary) {
+        await latestSalary.update({ bonuses: updates.bonus_amount });
+      }
+    }
+
+    await AuditLog.create({
+      user_id: actorId || null,
+      employee_id: payroll.employee_id,
+      action: 'PAYSLIP_EARNINGS_UPDATED',
+      new_value: {
+        payroll_record_id: payroll.id,
+        ...updates
+      },
+      reason: `HR updated earnings on ${MONTH_NAMES[payroll.payroll_month] || 'Month'} ${payroll.payroll_year} payslip`
+    });
+
+    return await this.getPayslipDetails(payroll.id);
+  }
+
+  async removeDeductionFromPayslip(payrollRecordId, deductionId, actorId) {
+    let payroll = await PayrollRecord.findByPk(payrollRecordId);
+    if (!payroll) {
+      const parsedId = parseInt(payrollRecordId, 10);
+      const possibleEmpId = parsedId > 900000 ? (parsedId - 999000) : parsedId;
+      const emp = await Employee.findByPk(possibleEmpId);
+      if (emp) {
+        const hist = await this.getEmployeeHistory(emp.id);
+        if (hist.payrollHistory && hist.payrollHistory.length > 0) {
+          payroll = await PayrollRecord.findByPk(hist.payrollHistory[0].id);
+        }
+      }
+    }
+
+    if (!payroll) {
+      throw { statusCode: 404, message: 'Payroll record not found' };
+    }
+
+    const deduction = await PayrollDeduction.findOne({
+      where: { id: deductionId, payroll_record_id: payroll.id }
+    });
+
+    if (deduction) {
+      const dedAmount = parseFloat(deduction.amount) || 0;
+      await deduction.destroy();
+
+      const newOtherDeductions = Math.max(0, (parseFloat(payroll.other_deductions) || 0) - dedAmount);
+      const newTotalDeductions = Math.max(0, (parseFloat(payroll.total_deductions) || 0) - dedAmount);
+      const newNetSalary = parseFloat(payroll.gross_salary) - newTotalDeductions;
+
+      await payroll.update({
+        other_deductions: newOtherDeductions,
+        total_deductions: newTotalDeductions,
+        net_salary: newNetSalary
+      });
+
+      await AuditLog.create({
+        user_id: actorId || null,
+        employee_id: payroll.employee_id,
+        action: 'DEDUCTION_REMOVED',
+        new_value: {
+          payroll_record_id: payroll.id,
+          removed_deduction: deduction.deduction_type,
+          amount: dedAmount,
+          new_net_salary: newNetSalary
+        },
+        reason: `HR removed deduction "${deduction.deduction_type}" (-${dedAmount}) from payslip`
+      });
+    }
+
+    return await this.getPayslipDetails(payroll.id);
   }
 
   async getPayslipHtml(payrollRecordId) {

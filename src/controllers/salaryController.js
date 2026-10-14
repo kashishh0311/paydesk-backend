@@ -72,6 +72,60 @@ const getPayslipHtml = async (req, res) => {
 };
 
 
+const addPayslipDeduction = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await payrollService.addDeductionToPayslip(id, req.body, req.user?.id);
+    return res.status(200).json({
+      success: true,
+      message: 'Deduction added successfully and salary slip recalculated',
+      data: result
+    });
+  } catch (error) {
+    console.error('addPayslipDeduction error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Failed to add deduction to payslip'
+    });
+  }
+};
+
+const updatePayslipEarnings = async (req, res) => {
+  try {
+    const { id } = req.params;
+    const result = await payrollService.updatePayslipEarnings(id, req.body, req.user?.id);
+    return res.status(200).json({
+      success: true,
+      message: 'Earnings updated successfully and salary slip recalculated',
+      data: result
+    });
+  } catch (error) {
+    console.error('updatePayslipEarnings error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Failed to update payslip earnings'
+    });
+  }
+};
+
+const removePayslipDeduction = async (req, res) => {
+  try {
+    const { id, deduction_id } = req.params;
+    const result = await payrollService.removeDeductionFromPayslip(id, deduction_id, req.user?.id);
+    return res.status(200).json({
+      success: true,
+      message: 'Deduction removed successfully and salary slip recalculated',
+      data: result
+    });
+  } catch (error) {
+    console.error('removePayslipDeduction error:', error);
+    return res.status(error.statusCode || 500).json({
+      success: false,
+      message: error.message || 'Failed to remove deduction'
+    });
+  }
+};
+
 const getSalaryStructure = async (req, res) => {
   try {
     const { employee_id } = req.params;
@@ -90,5 +144,8 @@ module.exports = {
   reviseSalary,
   getSalaryStructure,
   getEmployeeHistory,
-  getPayslipHtml
+  getPayslipHtml,
+  addPayslipDeduction,
+  updatePayslipEarnings,
+  removePayslipDeduction
 };
