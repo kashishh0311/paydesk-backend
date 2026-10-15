@@ -2,6 +2,8 @@ const { execSync } = require('child_process');
 const path = require('path');
 const { Employee } = require('../models');
 const seedEmployees = require('../../scripts/seedEmployees');
+const syncAllDeductions = require('../../scripts/syncAllDeductions');
+const { PayrollDeduction } = require('../models');
 
 const initDatabase = async () => {
   try {
@@ -28,6 +30,15 @@ const initDatabase = async () => {
       await seedEmployees();
     } else {
       console.log(`[PayDesk Auto-Init] 10,000 employees verified (${employeeCount} present).`);
+    }
+
+    // Automatically verify statutory deductions for all employees
+    const deductionCount = await PayrollDeduction.count();
+    if (deductionCount < 1000) {
+      console.log(`[PayDesk Auto-Init] Found only ${deductionCount} deductions. Auto-syncing statutory deductions...`);
+      await syncAllDeductions();
+    } else {
+      console.log(`[PayDesk Auto-Init] Statutory deductions verified (${deductionCount} present).`);
     }
 
     console.log('[PayDesk Auto-Init] Database ready.');
