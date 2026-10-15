@@ -1,70 +1,9 @@
 const { Op } = require('sequelize');
 const { sequelize, SalaryRecord, Employee, AuditLog, PayrollDeduction, PayrollRecord } = require('../models');
 
-let isDbSynchronized = false;
-async function ensureDbConsistency() {
-  if (isDbSynchronized) return;
-  try {
-    await sequelize.query(
-      "UPDATE salary_records SET deductions = ROUND(base_salary * 0.12), net_salary = base_salary + bonuses - ROUND(base_salary * 0.12) WHERE deductions = 0 OR deductions IS NULL"
-    );
-    await sequelize.query(
-      "UPDATE employees SET status = 'Active' WHERE status = 'On Leave'"
-    );
-    await sequelize.query(
-      "UPDATE payroll_deductions SET deduction_type = 'Professional Tax', reason = 'State statutory professional tax levy' WHERE deduction_type LIKE '%Statutory Withholding%'"
-    );
-    await sequelize.query(
-      "UPDATE payroll_deductions SET deduction_type = 'Health & Medical Premium', reason = 'Corporate group medical and health insurance coverage' WHERE deduction_type LIKE '%Medical Benefits%'"
-    );
-
-    const payrolls = await PayrollRecord.findAll();
-    for (const p of payrolls) {
-      const latestSal = await SalaryRecord.findOne({
-        where: { employee_id: p.employee_id },
-        order: [['effective_date', 'DESC'], ['id', 'DESC']]
-      });
-      if (latestSal) {
-        const base = parseFloat(latestSal.base_salary) || 65000;
-        const monthly = Math.round(base / 12);
-        const basic = Math.round(monthly * 0.50);
-        const allowances = monthly - basic;
-        const bonus = parseFloat(p.bonus_amount || 0);
-        const epf = Math.round(basic * 0.12);
-        const lop = parseFloat(p.lop_deduction || 0);
-        const other = parseFloat(p.other_deductions || 0);
-        const stat = epf + 200 + 120;
-        const totalDed = stat + lop + other;
-        const gross = monthly + bonus;
-        const net = gross - totalDed;
-
-        if (parseFloat(p.basic_salary) !== basic || parseFloat(p.allowances) !== allowances || parseFloat(p.gross_salary) !== gross) {
-          await p.update({
-            basic_salary: basic,
-            allowances,
-            gross_salary: gross,
-            statutory_deductions: stat,
-            total_deductions: totalDed,
-            net_salary: net
-          });
-          await PayrollDeduction.update(
-            { amount: epf },
-            { where: { payroll_record_id: p.id, deduction_type: 'Employee Provident Fund (EPF)' } }
-          );
-        }
-      }
-    }
-
-    isDbSynchronized = true;
-  } catch (e) {
-    console.error('Error during database consistency sync:', e.message);
-  }
-}
-
 class SalaryService {
 
   async listSalaries({ page = 1, limit = 15, search, department, record_type, month = '2026-10', isExport = false }) {
-    await ensureDbConsistency();
     const pageNum = Math.max(1, parseInt(page, 10) || 1);
     const limitNum = isExport ? Math.min(10000, Math.max(1, parseInt(limit, 10) || 10000)) : Math.min(100, Math.max(1, parseInt(limit, 10) || 15));
     const offset = (pageNum - 1) * limitNum;
@@ -72,21 +11,38 @@ class SalaryService {
     const employeeWhere = {};
     const salaryWhere = {};
 
+    const safeMonth = (month && /^\d{4}-\d{2}$/.test(month)) ? month : '2026-10';
+
     if (month) {
       salaryWhere.id = {
         [Op.in]: sequelize.literal(`(
-          SELECT MAX(id) FROM salary_records 
-          WHERE effective_date <= '${month}-31' 
-          GROUP BY employee_id
+          SELECT max_id FROM (
+            SELECT MAX(id) AS max_id 
+            FROM salary_records 
+            WHERE effective_date <= '${safeMonth}-31' 
+            GROUP BY employee_id
+          ) AS _latest_sub
         )`)
       };
     } else if (record_type === 'current' || !record_type) {
       salaryWhere.id = {
-        [Op.in]: sequelize.literal('(SELECT MAX(id) FROM salary_records GROUP BY employee_id)')
+        [Op.in]: sequelize.literal(`(
+          SELECT max_id FROM (
+            SELECT MAX(id) AS max_id 
+            FROM salary_records 
+            GROUP BY employee_id
+          ) AS _latest_sub
+        )`)
       };
     } else if (record_type === 'previous') {
       salaryWhere.id = {
-        [Op.notIn]: sequelize.literal('(SELECT MAX(id) FROM salary_records GROUP BY employee_id)')
+        [Op.notIn]: sequelize.literal(`(
+          SELECT max_id FROM (
+            SELECT MAX(id) AS max_id 
+            FROM salary_records 
+            GROUP BY employee_id
+          ) AS _latest_sub
+        )`)
       };
     }
 
