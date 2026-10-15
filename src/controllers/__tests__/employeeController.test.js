@@ -4,10 +4,11 @@ jest.mock('../../services/employeeService', () => ({
   listEmployees: jest.fn(),
   getEmployeeById: jest.fn(),
   createEmployee: jest.fn(),
+  updateEmployee: jest.fn(),
   deleteEmployee: jest.fn()
 }));
 
-const { getEmployees, getEmployeeById, createEmployee, deleteEmployee } = require('../employeeController');
+const { getEmployees, getEmployeeById, createEmployee, updateEmployee, deleteEmployee } = require('../employeeController');
 const employeeService = require('../../services/employeeService');
 
 describe('employeeController Unit Tests', () => {
@@ -85,6 +86,24 @@ describe('employeeController Unit Tests', () => {
         success: true,
         message: 'Employee EMP-000012 onboarded successfully.',
         data: created
+      });
+    });
+  });
+
+  describe('updateEmployee', () => {
+    it('returns 200 with success message on update', async () => {
+      req.params = { id: '12' };
+      req.body = { first_name: 'Sara Updated', last_name: 'Khan' };
+      const updated = { id: 12, employee_code: 'EMP-000012', first_name: 'Sara Updated' };
+      employeeService.updateEmployee.mockResolvedValue(updated);
+
+      await updateEmployee(req, res);
+
+      expect(res.status).toHaveBeenCalledWith(200);
+      expect(res.json).toHaveBeenCalledWith({
+        success: true,
+        message: 'Employee EMP-000012 updated successfully.',
+        data: updated
       });
     });
   });

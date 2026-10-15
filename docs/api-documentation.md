@@ -106,6 +106,40 @@ Authentication: Bearer Token via `Authorization: Bearer <token>` or HTTP-only `p
 - **Path**: `/api/v1/employees/:id`
 - **Description**: Atomically removes employee, child deductions, payroll runs, salary records, and audit logs.
 
+### 2.4 Update Employee Profile
+- **Method**: `PUT`
+- **Path**: `/api/v1/employees/:id`
+- **Request Body**:
+```json
+{
+  "first_name": "Priya",
+  "last_name": "Sharma",
+  "email": "priya.sharma@paydesk.internal",
+  "department": "Engineering",
+  "job_title": "Staff Engineer",
+  "country": "India",
+  "currency": "INR"
+}
+```
+- **Success Response (200 OK)**:
+```json
+{
+  "success": true,
+  "message": "Employee EMP-000001 updated successfully.",
+  "data": {
+    "id": 1,
+    "employee_code": "EMP-000001",
+    "first_name": "Priya",
+    "last_name": "Sharma",
+    "email": "priya.sharma@paydesk.internal",
+    "department": "Engineering",
+    "job_title": "Staff Engineer",
+    "country": "India",
+    "currency": "INR"
+  }
+}
+```
+
 ---
 
 ## 3. Salary & Compensation Endpoints (`/salaries`)

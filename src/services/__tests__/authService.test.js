@@ -4,7 +4,8 @@ const { describe, it, expect, beforeEach } = require('@jest/globals');
 jest.mock('../../models', () => {
   return {
     User: {
-      findOne: jest.fn()
+      findOne: jest.fn(),
+      findByPk: jest.fn()
     },
     Role: {}
   };

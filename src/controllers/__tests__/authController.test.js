@@ -1,7 +1,8 @@
 const { describe, it, expect, beforeEach } = require('@jest/globals');
 
 jest.mock('../../services/authService', () => ({
-  login: jest.fn()
+  login: jest.fn(),
+  updateProfile: jest.fn()
 }));
 
 jest.mock('../../utils/cookie', () => ({

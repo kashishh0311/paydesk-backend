@@ -171,6 +171,80 @@ class EmployeeService {
   }
 
 
+  async updateEmployee(id, data, actorId = null) {
+    const t = await sequelize.transaction();
+    try {
+      const employee = await Employee.findByPk(id, { transaction: t });
+      if (!employee) {
+        throw { statusCode: 404, message: 'Employee record not found' };
+      }
+
+      const { first_name, last_name, email, department, job_title, country, currency, hire_date, status } = data;
+
+      if (email && email.trim().toLowerCase() !== employee.email) {
+        const existing = await Employee.findOne({
+          where: { email: email.trim().toLowerCase(), id: { [Op.ne]: employee.id } },
+          transaction: t
+        });
+        if (existing) {
+          throw { statusCode: 409, message: 'An employee with this email address already exists' };
+        }
+      }
+
+      const previous_value = {
+        first_name: employee.first_name,
+        last_name: employee.last_name,
+        email: employee.email,
+        department: employee.department,
+        job_title: employee.job_title,
+        country: employee.country,
+        currency: employee.currency,
+        hire_date: employee.hire_date,
+        status: employee.status
+      };
+
+      if (first_name !== undefined) employee.first_name = first_name.trim();
+      if (last_name !== undefined) employee.last_name = last_name.trim();
+      if (email !== undefined) employee.email = email.trim().toLowerCase();
+      if (department !== undefined) employee.department = department;
+      if (job_title !== undefined) employee.job_title = job_title;
+      if (country !== undefined) employee.country = country;
+      if (currency !== undefined) employee.currency = currency;
+      if (hire_date !== undefined) employee.hire_date = hire_date;
+      if (status !== undefined) employee.status = status;
+
+      await employee.save({ transaction: t });
+
+      await AuditLog.create(
+        {
+          user_id: actorId,
+          employee_id: employee.id,
+          action: 'EMPLOYEE_UPDATED',
+          previous_value,
+          new_value: {
+            first_name: employee.first_name,
+            last_name: employee.last_name,
+            email: employee.email,
+            department: employee.department,
+            job_title: employee.job_title,
+            country: employee.country,
+            currency: employee.currency,
+            hire_date: employee.hire_date,
+            status: employee.status
+          },
+          reason: data.reason || 'Employee Profile Updated'
+        },
+        { transaction: t }
+      );
+
+      await t.commit();
+      return employee;
+    } catch (err) {
+      await t.rollback();
+      throw err;
+    }
+  }
+
   async deleteEmployee(id, actorId = null, reason = 'HR Manager requested record removal') {
     const t = await sequelize.transaction();
     try {

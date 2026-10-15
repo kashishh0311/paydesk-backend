@@ -62,6 +62,29 @@ const createEmployee = async (req, res) => {
   }
 };
 
+const updateEmployee = async (req, res) => {
+  try {
+    const updatedEmployee = await employeeService.updateEmployee(
+      req.params.id,
+      req.body,
+      req.user?.id || null
+    );
+
+    return res.status(200).json({
+      success: true,
+      message: `Employee ${updatedEmployee.employee_code} updated successfully.`,
+      data: updatedEmployee
+    });
+  } catch (error) {
+    console.error('updateEmployee error:', error);
+    const statusCode = error.statusCode || (error.name === 'SequelizeUniqueConstraintError' ? 409 : 400);
+    return res.status(statusCode).json({
+      success: false,
+      message: formatUserErrorMessage(error, 'Unable to update employee record. Please verify the input values.')
+    });
+  }
+};
+
 const deleteEmployee = async (req, res) => {
   try {
     const removedEmployee = await employeeService.deleteEmployee(
@@ -87,5 +110,6 @@ module.exports = {
   getEmployees,
   getEmployeeById,
   createEmployee,
+  updateEmployee,
   deleteEmployee
 };
