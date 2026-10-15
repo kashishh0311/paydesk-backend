@@ -7,7 +7,7 @@ const setAuthCookie = (res, token) => {
   res.cookie(COOKIE_NAME, token, {
     httpOnly: true,
     secure: isProduction,
-    sameSite: isProduction ? 'strict' : 'lax',
+    sameSite: isProduction ? 'none' : 'lax',
     maxAge
   });
 };
@@ -17,7 +17,7 @@ const clearAuthCookie = (res) => {
   res.clearCookie(COOKIE_NAME, {
     httpOnly: true,
     secure: isProduction,
-    sameSite: isProduction ? 'strict' : 'lax'
+    sameSite: isProduction ? 'none' : 'lax'
   });
 };
 
