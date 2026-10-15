@@ -107,8 +107,10 @@ const exportEmployees = async (req, res) => {
 
     const rows = await Employee.findAll({
       where,
+      attributes: ['id', 'employee_code', 'first_name', 'last_name', 'email', 'department', 'job_title', 'country', 'currency', 'hire_date'],
       limit: 10000,
-      order: [['id', 'ASC']]
+      order: [['id', 'ASC']],
+      raw: true
     });
 
     const filename = `paydesk_employees_${new Date().toISOString().split('T')[0]}`;
@@ -314,6 +316,7 @@ const exportAuditLogs = async (req, res) => {
   try {
     const { format = 'csv' } = req.query;
     const rows = await AuditLog.findAll({
+      attributes: ['id', 'action', 'reason', 'createdAt', 'created_at'],
       limit: 10000,
       order: [['id', 'DESC']],
       include: [

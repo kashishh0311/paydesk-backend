@@ -118,6 +118,15 @@ class SalaryService {
       ]
     });
 
+    if (isExport) {
+      return {
+        rows: rows.map(r => r.toJSON()),
+        count,
+        page: pageNum,
+        totalPages: 1
+      };
+    }
+
     const empIds = rows.map(r => r.employee_id);
     const monthPart = (month || '2026-10').split('-');
     const targetYear = parseInt(monthPart[0], 10) || 2026;

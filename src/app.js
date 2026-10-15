@@ -4,8 +4,32 @@ const cookieParser = require('cookie-parser');
 
 const app = express();
 
+const clientEnv = process.env.CLIENT_URL || '';
+const configuredOrigins = clientEnv
+  .split(',')
+  .map(url => url.trim().replace(/\/$/, ''))
+  .filter(Boolean);
+
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:3000',
+  'http://127.0.0.1:5173',
+  ...configuredOrigins
+];
+
 app.use(cors({
-  origin: process.env.CLIENT_URL || 'http://localhost:5173',
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    const isAllowed =
+      allowedOrigins.includes(origin) ||
+      origin.endsWith('.onrender.com') ||
+      origin.endsWith('.vercel.app') ||
+      origin.includes('localhost');
+    if (isAllowed) {
+      return callback(null, true);
+    }
+    return callback(new Error(`Origin ${origin} not allowed by CORS`));
+  },
   credentials: true
 }));
 app.use(express.json());
