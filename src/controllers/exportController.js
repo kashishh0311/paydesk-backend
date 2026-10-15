@@ -1,4 +1,4 @@
-const { Op } = require('sequelize');
+const { Op, QueryTypes } = require('sequelize');
 const XLSX = require('xlsx');
 const PDFDocument = require('pdfkit');
 const { sequelize, Employee, SalaryRecord, AuditLog } = require('../models');
@@ -91,6 +91,7 @@ const streamPdfTable = (res, { title, subtitle, headers, colWidths, rows, filena
 const exportEmployees = async (req, res) => {
   try {
     const { format = 'csv', search, department, country } = req.query;
+    const maxLimit = format === 'pdf' ? 500 : 10000;
     const where = {};
 
     if (department) where.department = department;
@@ -108,13 +109,12 @@ const exportEmployees = async (req, res) => {
     const rows = await Employee.findAll({
       where,
       attributes: ['id', 'employee_code', 'first_name', 'last_name', 'email', 'department', 'job_title', 'country', 'currency', 'hire_date'],
-      limit: 10000,
+      limit: maxLimit,
       order: [['id', 'ASC']],
       raw: true
     });
 
     const filename = `paydesk_employees_${new Date().toISOString().split('T')[0]}`;
-    // Status column removed from all exports
     const headers = ['Employee Code', 'First Name', 'Last Name', 'Email', 'Department', 'Job Title', 'Country', 'Currency', 'Hire Date'];
 
     // 1. PDF Export
@@ -132,9 +132,13 @@ const exportEmployees = async (req, res) => {
         e.hire_date || ''
       ]);
 
+      const countSubtitle = rows.length >= 500
+        ? `Showing top 500 records. For full datasets, please export as CSV or Excel. | Export Date: ${new Date().toLocaleString()}`
+        : `Export Date: ${new Date().toLocaleString()} | Total Records: ${rows.length}`;
+
       return streamPdfTable(res, {
         title: 'PayDesk - Global Employee Directory',
-        subtitle: `Export Date: ${new Date().toLocaleString()} | Total Records: ${rows.length}`,
+        subtitle: countSubtitle,
         headers,
         colWidths,
         rows: pdfRows,
@@ -197,25 +201,55 @@ const exportEmployees = async (req, res) => {
 
 /**
  * GET /api/v1/export/salaries
- * Exports salary records with country-specific currencies
+ * High-performance direct indexed query for salary exports
  */
 const exportSalaries = async (req, res) => {
   try {
-    const { format = 'csv', department, search, month = '2026-10', record_type = 'current' } = req.query;
+    const { format = 'csv', department, search, month = '2026-10' } = req.query;
+    const safeMonth = (month && /^\d{4}-\d{2}$/.test(month)) ? month : '2026-10';
+    const maxDate = `${safeMonth}-31`;
+    const maxLimit = format === 'pdf' ? 500 : 10000;
 
-    const salaryService = require('../services/salaryService');
-    const result = await salaryService.listSalaries({
-      page: 1,
-      limit: 10000,
-      month,
-      department,
-      search,
-      record_type,
-      isExport: true
+    const replacements = {
+      maxDate,
+      limit: maxLimit
+    };
+
+    let whereSql = '';
+    if (department && department.trim() !== '') {
+      whereSql += ' AND e.department = :dept';
+      replacements.dept = department.trim();
+    }
+    if (search && search.trim() !== '') {
+      whereSql += ' AND (e.employee_code LIKE :search OR e.first_name LIKE :search OR e.last_name LIKE :search)';
+      replacements.search = `%${search.trim()}%`;
+    }
+
+    const rows = await sequelize.query(`
+      SELECT 
+        e.employee_code,
+        CONCAT(e.first_name, ' ', e.last_name) AS employee_name,
+        e.department,
+        e.country,
+        e.currency,
+        s.base_salary,
+        s.deductions,
+        s.net_salary
+      FROM employees e
+      INNER JOIN salary_records s ON s.id = (
+        SELECT MAX(sr.id)
+        FROM salary_records sr
+        WHERE sr.employee_id = e.id AND sr.effective_date <= :maxDate
+      )
+      WHERE 1=1 ${whereSql}
+      ORDER BY e.id ASC
+      LIMIT :limit
+    `, {
+      replacements,
+      type: QueryTypes.SELECT
     });
 
-    const rows = result.rows || [];
-    const filename = `paydesk_salaries_${month}_${new Date().toISOString().split('T')[0]}`;
+    const filename = `paydesk_salaries_${safeMonth}_${new Date().toISOString().split('T')[0]}`;
     const headers = [
       'Employee Code',
       'Employee Name',
@@ -232,23 +266,30 @@ const exportSalaries = async (req, res) => {
     if (format === 'pdf') {
       const colWidths = [65, 110, 95, 80, 45, 95, 85, 75, 95];
       const pdfRows = rows.map((r) => {
-        const curr = r.employee?.currency || 'USD';
+        const curr = r.currency || 'USD';
+        const base = Number(r.base_salary) || 0;
+        const ded = Number(r.deductions) || 0;
+        const net = Number(r.net_salary) || 0;
         return [
-          r.employee?.employee_code || '-',
-          r.employee ? `${r.employee.first_name} ${r.employee.last_name}` : '-',
-          r.employee?.department || '-',
-          r.employee?.country || '-',
+          r.employee_code || '-',
+          r.employee_name || '-',
+          r.department || '-',
+          r.country || '-',
           curr,
-          formatAmount(r.base_salary, curr),
-          formatAmount(Math.round(Number(r.base_salary) / 12), curr) + '/mo',
-          '-' + formatAmount(r.deductions, curr),
-          formatAmount(r.net_salary, curr)
+          formatAmount(base, curr),
+          formatAmount(Math.round(base / 12), curr) + '/mo',
+          '-' + formatAmount(ded, curr),
+          formatAmount(net, curr)
         ];
       });
 
+      const countSubtitle = rows.length >= 500
+        ? `Showing top 500 records. For full datasets, please export as CSV or Excel. | Effective Cycle: ${safeMonth}`
+        : `Effective Cycle: ${safeMonth} | Export Date: ${new Date().toLocaleString()} | Total Records: ${rows.length}`;
+
       return streamPdfTable(res, {
         title: 'PayDesk - Employee Salary Report',
-        subtitle: `Effective Cycle: ${month} | Export Date: ${new Date().toLocaleString()} | Total Records: ${rows.length}`,
+        subtitle: countSubtitle,
         headers,
         colWidths,
         rows: pdfRows,
@@ -262,11 +303,11 @@ const exportSalaries = async (req, res) => {
       const data = [
         headers,
         ...rows.map((r) => [
-          r.employee?.employee_code || '',
-          r.employee ? `${r.employee.first_name} ${r.employee.last_name}` : '',
-          r.employee?.department || '',
-          r.employee?.country || '',
-          r.employee?.currency || 'USD',
+          r.employee_code || '',
+          r.employee_name || '',
+          r.department || '',
+          r.country || '',
+          r.currency || 'USD',
           Number(r.base_salary) || 0,
           Math.round(Number(r.base_salary) / 12) || 0,
           -Math.abs(Number(r.deductions)) || 0,
@@ -288,11 +329,11 @@ const exportSalaries = async (req, res) => {
     const csvContent = [
       headers.join(','),
       ...rows.map((r) => [
-        escapeCsv(r.employee?.employee_code || ''),
-        escapeCsv(r.employee ? `${r.employee.first_name} ${r.employee.last_name}` : ''),
-        escapeCsv(r.employee?.department || ''),
-        escapeCsv(r.employee?.country || ''),
-        escapeCsv(r.employee?.currency || 'USD'),
+        escapeCsv(r.employee_code),
+        escapeCsv(r.employee_name),
+        escapeCsv(r.department),
+        escapeCsv(r.country),
+        escapeCsv(r.currency || 'USD'),
         escapeCsv(Number(r.base_salary).toFixed(2)),
         escapeCsv(Math.round(Number(r.base_salary) / 12).toFixed(2)),
         escapeCsv((-Math.abs(Number(r.deductions))).toFixed(2)),
